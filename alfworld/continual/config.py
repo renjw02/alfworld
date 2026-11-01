@@ -39,7 +39,7 @@ class TrainingConfig:
 @dataclass
 class Config:
     method: str = "memoryless"
-    action_mode: str = "free"
+    action_mode: str = "admissible"
     window_episodes: int = 4
     max_steps: int = 50
     output_dir: str = "runs/experiment"

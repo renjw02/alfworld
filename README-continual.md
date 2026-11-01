@@ -13,8 +13,8 @@ uv sync --locked --extra continual
 uv run --locked --extra continual alfworld-download --text-only
 uv run --locked --extra continual python -m alfworld.continual \
   --config configs/continual.yaml \
-  --method memoryless --stream-order shuffled --action-mode free \
-  --device cuda:0 --output-dir runs/memoryless-shuffled-free
+  --method memoryless --stream-order shuffled --action-mode admissible \
+  --device cuda:0 --output-dir runs/memoryless-shuffled-admissible
 ```
 
 默认 BF16，不量化；选择有足够显存的 GPU。加载前要求至少 24 GiB 空闲显存，
@@ -56,7 +56,7 @@ Reasoning 可多行，Action 必须是最后一行且仅出现一次。只执行
 动作模式可配置：
 
 - `free`：给出固定动作语法，不展示当前合法动作列表。
-- `admissible`：额外展示环境给出的当前合法动作列表，要求选择其中一条。
+- `admissible`（默认）：每步直接展示环境给出的当前合法动作列表，要求原样选择其中一条；不附带通用动作语法示例。
 
 两种模式都将合法动作列表保存到日志以便分析，不提供专家解法或额外评审。
 
@@ -72,19 +72,19 @@ Reasoning 可多行，Action 必须是最后一行且仅出现一次。只执行
 
 ```bash
 uv run --locked --extra continual python -m alfworld.continual \
-  --method icl --window-episodes 4 --stream-order shuffled --action-mode free \
-  --manifest runs/memoryless-shuffled-free/manifest.json \
-  --output-dir runs/icl-shuffled-free
+  --method icl --window-episodes 4 --stream-order shuffled --action-mode admissible \
+  --manifest runs/memoryless-shuffled-admissible/manifest.json \
+  --output-dir runs/icl-shuffled-admissible
 
 uv run --locked --extra continual python -m alfworld.continual \
-  --method history-ntp --stream-order shuffled --action-mode free \
-  --manifest runs/memoryless-shuffled-free/manifest.json \
-  --output-dir runs/ntp-shuffled-free
+  --method history-ntp --stream-order shuffled --action-mode admissible \
+  --manifest runs/memoryless-shuffled-admissible/manifest.json \
+  --output-dir runs/ntp-shuffled-admissible
 ```
 
 manifest 中的 seed、顺序类型、任务块顺序必须与配置一致，否则报错。三种方法的实际交互
 会随策略变化；共享的是任务顺序、交互协议和初始模型，不要求产生相同轨迹。
-通过 `--stream-order task_blocked --action-mode admissible` 可选择另一组实验设置。
+通过 `--stream-order task_blocked` 可切换任务块顺序；`--action-mode free` 可显式切换为不提供合法命令列表。
 
 其他常用参数：`--limit 2 --max-steps 3` 用于冒烟验证，`--device cuda:6` 指定设备，
 `--data-dir /path/to/alfworld` 指定数据根目录。数据路径优先级：CLI > 调用者设置的
@@ -148,9 +148,9 @@ episodes.csv                # 逐局指标和累计/滚动成功率
 
 ```bash
 uv run --locked --extra continual python -m alfworld.continual \
-  --method history-ntp --stream-order shuffled --action-mode free \
-  --manifest runs/memoryless-shuffled-free/manifest.json \
-  --output-dir runs/ntp-shuffled-free --resume
+  --method history-ntp --stream-order shuffled --action-mode admissible \
+  --manifest runs/memoryless-shuffled-admissible/manifest.json \
+  --output-dir runs/ntp-shuffled-admissible --resume
 ```
 
 恢复验证配置、依赖版本、模型标识和数据摘要，从上一已提交边界继续。
@@ -163,7 +163,7 @@ uv run --locked --extra continual python -m alfworld.continual \
 重新生成分析（不加载模型）：
 
 ```bash
-uv run --locked python -m alfworld.continual.analysis runs/ntp-shuffled-free --rolling-window 20
+uv run --locked python -m alfworld.continual.analysis runs/ntp-shuffled-admissible --rolling-window 20
 ```
 
 输出包括累计/滚动/按任务类型成功率、格式错误率、非法动作率、平均 reasoning 字符数、

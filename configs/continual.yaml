@@ -1,6 +1,6 @@
 # Every method starts from the same base model in its own output directory.
 method: memoryless                 # memoryless | icl | history-ntp
-action_mode: free
+action_mode: admissible            # provide the current environment's exact valid commands
 window_episodes: 4                 # includes the current episode
 max_steps: 50                      # counts malformed generations too
 output_dir: runs/experiment

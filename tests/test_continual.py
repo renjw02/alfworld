@@ -6,7 +6,7 @@ import unittest
 from alfworld.continual.config import Config, load_config
 from alfworld.continual.methods import Method
 from alfworld.continual.model import MockBackend
-from alfworld.continual.prompting import parse_react, observation_message
+from alfworld.continual.prompting import parse_react, observation_message, system_message
 from alfworld.continual.stream import build_manifest, validate_manifest
 from alfworld.continual.training import token_chunks
 from alfworld.continual.types import Episode, Generation
@@ -52,6 +52,7 @@ class ProtocolTests(unittest.TestCase):
         config = load_config("configs/continual.yaml").validate()
         self.assertEqual(config.model.max_new_tokens, 1024)
         self.assertEqual(config.checkpoint_interval, 10)
+        self.assertEqual(config.action_mode, "admissible")
         for invalid in (0, -1, True, 1.5):
             config.checkpoint_interval = invalid
             with self.assertRaisesRegex(ValueError, "checkpoint_interval"):
@@ -103,6 +104,10 @@ class ProtocolTests(unittest.TestCase):
         candidates = observation_message("room", ["look"], "admissible")
         self.assertNotIn("Admissible", free["content"])
         self.assertIn("Admissible commands:\nlook", candidates["content"])
+        instructions = system_message("admissible")["content"]
+        self.assertIn("copying exactly one command", instructions)
+        self.assertNotIn("Action syntax examples", instructions)
+        self.assertIn("move <object> to <receptacle>", system_message("free")["content"])
 
     def test_stream_reproducibility_integrity(self):
         shuffled = build_manifest(self.config.stream)
