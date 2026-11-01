@@ -15,6 +15,9 @@ For the latest updates, see: [**alfworld.github.io**](https://alfworld.github.io
 
 ## Quickstart
 
+**Text-only with uv (no Conda or GPU):** see [the project-level uv setup guide](README-uv.md)
+for installation, data download, and a runnable Python environment check.
+
 Create a virtual environment (recommended)
 
     conda create -n alfworld python=3.9

@@ -1,2 +1,6 @@
 textworld[pddl]>=1.6.1
 pyyaml
+numpy
+requests
+termcolor
+tqdm

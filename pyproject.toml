@@ -1,3 +1,12 @@
 [build-system]
 requires = ["setuptools >= 61.0"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "alfworld"
+requires-python = ">=3.9"
+dynamic = ["version", "description", "license", "dependencies", "optional-dependencies"]
+
+[tool.uv]
+# uv also resolves optional extras. Legacy visdom needs pkg_resources at build time.
+build-constraint-dependencies = ["setuptools<81"]

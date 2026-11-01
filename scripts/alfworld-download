@@ -106,6 +106,8 @@ def build_argparser():
                         help="Folder where to download the data. Default: '%(default)s'")
     parser.add_argument("--extra", action="store_true",
                         help="Also, download pre-trained BUTLER agents and Seq2Seq training files.")
+    parser.add_argument("--text-only", action="store_true",
+                        help="Skip the visual MaskRCNN detector checkpoint.")
     parser.add_argument("-f", "--force", action="store_true",
                         help="Overwrite existing files.")
     parser.add_argument("-ff", "--force-download", action="store_true",
@@ -133,7 +135,8 @@ def main():
     unzip(zipped_filename, dst=args.data_dir, force=args.force)
     os.remove(zipped_filename)
 
-    download(MRCNN_URL, dst=pjoin(args.data_dir, "detectors"), force=args.force_download)
+    if not args.text_only:
+        download(MRCNN_URL, dst=pjoin(args.data_dir, "detectors"), force=args.force_download)
 
     if args.extra:
         zipped_filename = download(CHECKPOINTS_URL, dst=args.data_dir,
