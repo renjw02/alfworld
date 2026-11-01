@@ -17,6 +17,8 @@ stream:
 model:
   path: /data/jiawei/models/Qwen3.5-9B
   device: cuda:0
+  devices: []                     # inference only; e.g. [cuda:0, cuda:1] for layer sharding
+  gpu_memory_gib: []               # optional allocator cap for each entry in devices
   backend: hf                     # mock is ONLY for control-flow testing
   max_input_tokens: 100000
   max_new_tokens: 1024             # reasoning and action together

@@ -26,6 +26,9 @@ def main():
     parser.add_argument("--cheatsheet-max-new-tokens", type=int,
                         help="DC curator output budget (default: 2048 tokens)")
     parser.add_argument("--device")
+    parser.add_argument("--devices", nargs="+", help="Inference layer sharding, e.g. cuda:0 cuda:1")
+    parser.add_argument("--gpu-memory-gib", nargs="+", type=float,
+                        help="Per-device PyTorch allocator caps for --devices")
     parser.add_argument("--backend", choices=["hf", "mock"])
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
@@ -45,6 +48,12 @@ def main():
     for name in ("device", "backend"):
         if getattr(args, name) is not None:
             setattr(config.model, name, getattr(args, name))
+    if args.devices is not None:
+        config.model.devices = args.devices
+        if args.device is None:
+            config.model.device = args.devices[0]
+    if args.gpu_memory_gib is not None:
+        config.model.gpu_memory_gib = args.gpu_memory_gib
     print(json.dumps(run(config, args.resume), indent=2))
 
 

@@ -7,21 +7,51 @@ from .types import Generation
 from .training import NTPTrainer
 
 
+def layer_device_map(num_layers, devices):
+    """Keep each decoder layer intact and place contiguous blocks on each GPU."""
+    if num_layers < len(devices):
+        raise ValueError("More GPUs than decoder layers")
+    mapping = {"model.embed_tokens": devices[0], "model.rotary_emb": devices[0],
+               "model.norm": devices[-1], "lm_head": devices[0]}
+    for index in range(num_layers):
+        mapping[f"model.layers.{index}"] = devices[index * len(devices) // num_layers]
+    return mapping
+
+
 class HFBackend:
     def __init__(self, config, model=None, tokenizer=None):
         import torch
-        from transformers import AutoTokenizer, Qwen3_5ForCausalLM
+        from transformers import AutoConfig, AutoTokenizer, Qwen3_5ForCausalLM
         self.config = config
         self.tokenizer = tokenizer or AutoTokenizer.from_pretrained(config.model.path, local_files_only=True)
         if model is None:
             if not config.model.device.startswith("cuda") or not torch.cuda.is_available():
                 raise RuntimeError("The 9B backend requires a CUDA device; use --backend mock for CPU control-flow tests")
-            free, _ = torch.cuda.mem_get_info(config.model.device)
-            if free < 24 * 1024**3:
-                raise RuntimeError("Less than 24 GiB GPU memory is free. No quantization or device fallback is applied.")
+            device_map = {"": config.model.device}
+            if config.model.devices:
+                config.validate()
+                available = []
+                for index, device in enumerate(config.model.devices):
+                    free, total = torch.cuda.mem_get_info(device)
+                    cap = free - 3 * 1024**3
+                    if config.model.gpu_memory_gib:
+                        cap = min(cap, config.model.gpu_memory_gib[index] * 1024**3)
+                    if cap < 8 * 1024**3:
+                        raise RuntimeError(f"Insufficient memory on {device} after reserving 3 GiB")
+                    torch.cuda.set_per_process_memory_fraction(cap / total, device)
+                    available.append(cap)
+                if sum(available) < 24 * 1024**3:
+                    raise RuntimeError("Less than 24 GiB available across selected GPUs")
+                architecture = AutoConfig.from_pretrained(config.model.path, local_files_only=True)
+                architecture = getattr(architecture, "text_config", architecture)
+                device_map = layer_device_map(architecture.num_hidden_layers, config.model.devices)
+            else:
+                free, _ = torch.cuda.mem_get_info(config.model.device)
+                if free < 24 * 1024**3:
+                    raise RuntimeError("Less than 24 GiB GPU memory is free. No quantization or device fallback is applied.")
             model, loading = Qwen3_5ForCausalLM.from_pretrained(
                 config.model.path, local_files_only=True, dtype=torch.bfloat16,
-                device_map={"": config.model.device}, output_loading_info=True,
+                device_map=device_map, output_loading_info=True,
             )
             if loading.get("missing_keys") or loading.get("mismatched_keys") or loading.get("error_msgs"):
                 raise RuntimeError(f"Incomplete model load: {loading}")

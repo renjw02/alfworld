@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from alfworld.continual.config import Config, load_config
 from alfworld.continual.methods import Method
-from alfworld.continual.model import MockBackend
+from alfworld.continual.model import MockBackend, layer_device_map
 from alfworld.continual.prompting import parse_react, observation_message, system_message
 from alfworld.continual.stream import build_manifest, validate_manifest
 from alfworld.continual.training import token_chunks
@@ -29,6 +29,24 @@ class FakeEnv:
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_layer_sharding_and_inference_resume(self):
+        mapping = layer_device_map(32, ["cuda:0", "cuda:1"])
+        self.assertEqual(mapping["model.layers.15"], "cuda:0")
+        self.assertEqual(mapping["model.layers.16"], "cuda:1")
+        self.assertEqual(mapping["lm_head"], mapping["model.embed_tokens"])
+        self.assertEqual(len([k for k in mapping if k.startswith("model.layers.")]), 32)
+        eight = layer_device_map(32, [f"cuda:{i}" for i in range(8)])
+        for index in range(32):
+            self.assertEqual(eight[f"model.layers.{index}"], f"cuda:{index // 4}")
+        run(self.config, backend_factory=MockBackend, env_factory=FakeEnv)
+        self.config.model.devices = ["cuda:0", "cuda:1"]
+        self.config.model.gpu_memory_gib = [34, 25]
+        result = run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
+        self.assertEqual(result["episodes"], 2)
+        self.config.method = "history-ntp"
+        with self.assertRaisesRegex(ValueError, "inference methods only"):
+            self.config.validate()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

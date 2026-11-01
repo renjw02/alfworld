@@ -36,6 +36,8 @@ def rng_state(config):
         state["torch"] = torch.get_rng_state()
         if config.model.device.startswith("cuda"):
             state["cuda"] = torch.cuda.get_rng_state(config.model.device)
+            if config.model.devices:
+                state["cuda_devices"] = {d: torch.cuda.get_rng_state(d) for d in config.model.devices}
     return state
 
 
@@ -47,6 +49,9 @@ def restore_rng(state, config):
         torch.set_rng_state(state["torch"])
         if "cuda" in state:
             torch.cuda.set_rng_state(state["cuda"], config.model.device)
+        for device, value in state.get("cuda_devices", {}).items():
+            if device in config.model.devices:
+                torch.cuda.set_rng_state(value, device)
 
 
 def metadata():
@@ -151,7 +156,14 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             # Older runs predate this storage-only setting; their checkpoints remain readable.
             saved_config.setdefault("checkpoint_interval", 10)
             saved_config.setdefault("cheatsheet_max_new_tokens", 2048)
-            if saved_config != config.to_dict():
+            saved_config["model"].setdefault("devices", [])
+            saved_config["model"].setdefault("gpu_memory_gib", [])
+            current_config = config.to_dict()
+            if not config.is_ntp:
+                # Placement changes are recorded per invocation, not experiment semantics.
+                for key in ("device", "devices", "gpu_memory_gib"):
+                    saved_config["model"][key] = current_config["model"][key]
+            if saved_config != current_config:
                 raise ValueError("Resume configuration differs from the saved configuration")
             saved_metadata = json.loads((root / "metadata.json").read_text())
             if saved_metadata["packages"] != metadata()["packages"]:
@@ -177,6 +189,11 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
         print(f"Execution traces: {trace_root}", flush=True)
         seed_all(config.stream.seed, config)
         backend = backend_factory(config)
+        write_json(trace_root / "placement.json", {
+            "device": config.model.device, "devices": config.model.devices,
+            "gpu_memory_gib": config.model.gpu_memory_gib,
+            "device_map": getattr(getattr(backend, "model", None), "hf_device_map", None),
+        })
         backend_metadata = backend.metadata()
         if (root / "model.json").exists():
             if json.loads((root / "model.json").read_text()) != backend_metadata:

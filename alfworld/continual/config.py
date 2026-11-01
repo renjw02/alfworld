@@ -23,6 +23,8 @@ class StreamConfig:
 class ModelConfig:
     path: str = "/data/jiawei/models/Qwen3.5-9B"
     device: str = "cuda:0"
+    devices: list[str] = field(default_factory=list)  # optional contiguous layer sharding
+    gpu_memory_gib: list[float] = field(default_factory=list)  # allocator caps per device
     max_input_tokens: int = 100000
     max_new_tokens: int = 1024
     # Test backend exercises the real runner/environment without loading weights.
@@ -74,6 +76,21 @@ class Config:
             raise ValueError("task_order must be a permutation of 1..6")
         if self.model.backend not in ("hf", "mock"):
             raise ValueError("Unknown model backend")
+        if self.model.devices:
+            if self.is_ntp:
+                raise ValueError("Multi-GPU layer sharding is supported for inference methods only")
+            if (len(self.model.devices) < 2 or len(set(self.model.devices)) != len(self.model.devices)
+                    or any(not isinstance(d, str) or not d.startswith("cuda:")
+                           or not d[5:].isdigit() for d in self.model.devices)):
+                raise ValueError("model.devices must contain at least two distinct cuda:N devices")
+            if self.model.device != self.model.devices[0]:
+                raise ValueError("model.device must be the first entry in model.devices")
+        if self.model.gpu_memory_gib:
+            import math
+            if (len(self.model.gpu_memory_gib) != len(self.model.devices)
+                    or any(isinstance(v, bool) or not isinstance(v, (int, float))
+                           or not math.isfinite(v) or v <= 0 for v in self.model.gpu_memory_gib)):
+                raise ValueError("gpu_memory_gib must specify one positive finite cap per device")
         for name, value in {
             "window_episodes": self.window_episodes, "max_steps": self.max_steps,
             "max_input_tokens": self.model.max_input_tokens,

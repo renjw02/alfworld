@@ -21,6 +21,18 @@ uv run --locked --extra continual python -m alfworld.continual \
 这只是最低检查，不代表长上下文或训练的显存保证；完整实验建议使用空闲 H100 80GB。
 输入过长、显存不足、模型加载不完整时直接报错，不静默量化或截断历史。
 
+推理方法支持跨 GPU 按连续 decoder 层分配（不是张量并行，也不保证加速）。例如
+`--devices cuda:0 cuda:1 --gpu-memory-gib 32 24`，或在 `model.devices` 和
+`model.gpu_memory_gib` 中填写对应列表。设备编号相对于 `CUDA_VISIBLE_DEVICES`；
+模型的输入设备须为列表第一项。每卡实际分配上限取配置值与当时空闲显存减 3 GiB 的较小值。
+不进行 CPU offload 或量化，当前不支持用此模式训练 NTP。
+模型层拆分可减少每卡权重和缓存，但单层长输入的临时张量仍可能导致 OOM，
+因此不能仅凭卡数保证 100K 上下文可运行。
+
+推理恢复时允许更改上述 GPU 布局，任务、窗口和解码配置仍必须一致。
+每次启动的 `invocation.json` 和 `placement.json` 记录有效配置和实际层分布；
+旧的单卡 checkpoint 仍可恢复，多卡运行也保存各设备 RNG 状态。
+
 `continual` extra 独立于 `full/vis`，不需要 AI2-THOR、视觉检测器或训练 BUTLER。
 基础 `uv sync --locked` 仍然只安装原来的文本环境依赖。
 底层 Qwen3.5 线性注意力在没有可选优化 kernel 时使用正确但较慢的 PyTorch 实现。
