@@ -76,6 +76,74 @@ class ProtocolTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "checkpoint_interval"):
                 config.validate()
 
+    def test_task_scope_context_and_cheatsheet_reset(self):
+        for method in ("icl", "dc-cumulative"):
+            with self.subTest(method=method):
+                self.config.method = method
+                self.config.memory_scope = "task_type"
+                self.config.stream.order = "task_blocked"
+                self.config.stream.limit = 12
+                self.config.output_dir = str(self.root / method)
+                contexts = []
+                class Backend(MockBackend):
+                    def generate(self, messages, **kwargs):
+                        from alfworld.continual.cheatsheet import CURATOR_SYSTEM
+                        if messages[0]["content"] != CURATOR_SYSTEM:
+                            contexts.append(copy.deepcopy(messages))
+                        return super().generate(messages, **kwargs)
+                result = run(self.config, backend_factory=Backend, env_factory=FakeEnv)
+                self.assertEqual(len(result["by_task"]), 6)
+                self.assertTrue(all(v["episodes"] == 2 for v in result["by_task"].values()))
+                for i, messages in enumerate(contexts):
+                    if method == "icl":
+                        self.assertEqual(sum(m["content"].startswith("BEGIN EPISODE") for m in messages),
+                                         1 if i % 2 == 0 else 2)
+                    else:
+                        self.assertEqual("(empty)" in messages[1]["content"], i % 2 == 0)
+                root = Path(self.config.output_dir)
+                _, rows = load_checkpoint(root)
+                self.assertEqual([r["memory_reset_before"] for r in rows],
+                                 [False, False] + [True, False] * 5)
+                if method == "dc-cumulative":
+                    self.assertEqual([r["cheatsheet_version_after"] for r in rows], [1, 2] * 6)
+                import csv
+                scored = list(csv.DictReader((root / "episodes.csv").open()))
+                self.assertEqual([int(r["task_episode"]) for r in scored], [1, 2] * 6)
+                self.assertEqual(len(list(csv.DictReader((root / "task_summary.csv").open()))), 6)
+
+    def test_task_scope_training_boundary_resume(self):
+        self.config.method = "history-ntp-assistant"
+        self.config.memory_scope = "task_type"
+        self.config.stream.order = "task_blocked"
+        self.config.stream.limit = 12
+        class FailingBackend(MockBackend):
+            calls = 0
+            def train_episode(self, messages):
+                self.calls += 1
+                result = super().train_episode(messages)
+                if self.calls == 3:
+                    raise RuntimeError("new category interrupted")
+                return result
+        with self.assertRaisesRegex(RuntimeError, "new category"):
+            run(self.config, backend_factory=FailingBackend, env_factory=FakeEnv)
+        root = Path(self.config.output_dir)
+        state, rows = load_checkpoint(root)
+        self.assertEqual(state["next_position"], 2)  # category end saved before interval 10
+        self.assertEqual(state["backend"]["updates"], 2)
+        old_traces = {p: p.read_bytes() for p in root.glob("traces/*/episodes/*/*/steps.jsonl")}
+        run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
+        state, rows = load_checkpoint(root)
+        self.assertEqual(state["backend"]["updates"], 2)  # only the last category's updates
+        self.assertEqual([r["model_version_after"] for r in rows], [1, 2] * 6)
+        self.assertEqual([r["position"] for r in rows], list(range(12)))
+        for path, contents in old_traces.items():
+            self.assertEqual(path.read_bytes(), contents)
+
+    def test_task_scope_requires_blocked_order(self):
+        self.config.memory_scope = "task_type"
+        with self.assertRaisesRegex(ValueError, "task_blocked"):
+            self.config.validate()
+
     def test_react(self):
         parsed = parse_react("Reasoning: First inspect.\nThen take it.\nAction: look\n")
         self.assertIsNone(parsed.error)

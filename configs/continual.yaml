@@ -6,6 +6,7 @@ max_steps: 50                      # counts malformed generations too
 output_dir: runs/experiment
 cheatsheet_max_new_tokens: 2048    # DC-Cumulative: one curator call after each episode
 checkpoint_interval: 10            # all NTP methods; also save at completion
+memory_scope: stream               # task_type resets history/cheatsheet/LoRA between categories
 stream:
   order: shuffled                 # shuffled | task_blocked
   seed: 42

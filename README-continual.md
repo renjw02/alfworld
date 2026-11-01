@@ -51,7 +51,16 @@ uv run --locked --extra continual python -m alfworld.continual \
 
 `window_episodes` 默认 4，**包含当前局**；K=1 的 ICL 与 memoryless 输入一致。
 所有历史保留 reasoning、action、观察、分数、格式反馈和终局反馈。
-每个方法在独立输出目录从同一初始模型开始。切换任务类型时不清除历史或参数。
+每个方法在独立输出目录从同一初始模型开始。默认 `memory_scope: stream`，
+切换任务类型时不清除历史或参数。
+
+使用 `--stream-order task_blocked --memory-scope task_type` 运行按类别独立积累记忆的对照：
+类别内照常学习，进入下一类别前，ICL 清空历史，DC 清空 cheatsheet，NTP 恢复本次运行
+初始的 LoRA 参数、空优化器状态和更新计数。冻结的基础模型不变，各类也恢复初始 RNG 状态。
+这一模式要求分块顺序，避免在 shuffled 中反复切换类别造成含义不同的重置。
+它不改变类别内部的任务顺序，也不需要为 memoryless 额外重复一份对照。
+训练方法除每 10 局和最终保存外，还在类别末尾保存 checkpoint；恢复时根据保存的当前类别
+判断是否需要重置，避免把上一类别的学习带入新类别。边界事件记录在 `steps.jsonl`。
 
 模型每步显式输出：
 
@@ -198,6 +207,7 @@ traces/<UTC启动时间戳>/
     error.json                # 仅异常尝试存在
 summary.json                # 已提交结果汇总
 episodes.csv                # 逐局指标和累计/滚动成功率
+task_summary.csv            # 六类各自的局数、成功局数和成功率
 ```
 
 每次启动（包括 `--resume`）新建一个 UTC 时间戳 traces 子目录，集中保存该次启动的所有 episode traces；旧目录保留。检查点和提交索引仍在实验根目录，分析按 `attempt_dir` 查找记录，兼容旧目录结构。正在运行的旧进程不会改变日志路径。
@@ -238,6 +248,8 @@ uv run --locked python -m alfworld.continual.analysis runs/ntp-shuffled-admissib
 
 输出包括累计/滚动/按任务类型成功率、格式错误率、非法动作率、平均 reasoning 字符数、
 输出 token 数、总输入 token、生成和训练耗时。错误尝试和未提交更新不会污染指标。
+`summary.json.by_task` 和 `task_summary.csv` 始终包含六类，未运行类别的成功率为空；
+`episodes.csv` 另外提供类别内的 episode 序号、累计成功率和滚动成功率，窗口不跨类别混算。
 其中 `invalid_action_rate` 定义为已执行动作不在当前候选列表中的比例，
 用于诊断，不等同于环境解析器确认的语法错误率。
 

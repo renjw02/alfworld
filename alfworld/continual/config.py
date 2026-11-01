@@ -52,6 +52,7 @@ class Config:
     output_dir: str = "runs/experiment"
     cheatsheet_max_new_tokens: int = 2048
     checkpoint_interval: int = 10  # training episodes per model/optimizer checkpoint
+    memory_scope: str = "stream"  # stream | task_type (reset on task-block boundaries)
     stream: StreamConfig = field(default_factory=StreamConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
@@ -71,6 +72,10 @@ class Config:
             raise ValueError("Unknown action_mode")
         if self.stream.order not in ("shuffled", "task_blocked"):
             raise ValueError("Unknown stream order")
+        if self.memory_scope not in ("stream", "task_type"):
+            raise ValueError("Unknown memory_scope")
+        if self.memory_scope == "task_type" and self.stream.order != "task_blocked":
+            raise ValueError("task_type memory_scope requires task_blocked order")
         if self.stream.split != "valid_seen":
             raise ValueError("This protocol uses valid_seen")
         if sorted(self.stream.task_order) != list(range(1, 7)):

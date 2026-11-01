@@ -12,6 +12,22 @@ class Method:
         self.version = 0
         self.cheatsheet = ""
         self.cheatsheet_version = 0
+        self.current_task = None
+        # Capture the original adapter/optimizer before a resume loads adapted state.
+        self.initial_backend = (copy.deepcopy(backend.state_dict())
+                                if config.memory_scope == "task_type" and config.is_ntp else None)
+
+    def begin_task(self, task_type):
+        reset = (self.config.memory_scope == "task_type" and self.current_task is not None
+                 and self.current_task != task_type)
+        if reset:
+            self.history = []
+            self.cheatsheet = ""
+            self.version = self.cheatsheet_version = 0
+            if self.initial_backend is not None:
+                self.backend.load_state_dict(copy.deepcopy(self.initial_backend))
+        self.current_task = task_type
+        return reset
 
     def build_context(self, episode):
         messages = [system_message(self.config.action_mode)]
@@ -62,7 +78,7 @@ class Method:
         return None
 
     def state_dict(self):
-        state = {"history": self.history, "version": self.version}
+        state = {"history": self.history, "version": self.version, "current_task": self.current_task}
         if self.config.method == "dc-cumulative":
             state.update(cheatsheet=self.cheatsheet, cheatsheet_version=self.cheatsheet_version)
         return state
@@ -72,3 +88,4 @@ class Method:
         self.version = state["version"]
         self.cheatsheet = state.get("cheatsheet", "")
         self.cheatsheet_version = state.get("cheatsheet_version", 0)
+        self.current_task = state.get("current_task")

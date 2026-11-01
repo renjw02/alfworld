@@ -158,6 +158,7 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             # Older runs predate this storage-only setting; their checkpoints remain readable.
             saved_config.setdefault("checkpoint_interval", 10)
             saved_config.setdefault("cheatsheet_max_new_tokens", 2048)
+            saved_config.setdefault("memory_scope", "stream")
             saved_config["model"].setdefault("devices", [])
             saved_config["model"].setdefault("gpu_memory_gib", [])
             saved_config["model"].setdefault("context_overflow", "error")
@@ -204,6 +205,7 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
         else:
             write_json(root / "model.json", backend_metadata)
         method = Method(config, backend)
+        initial_rng = rng_state(config) if config.memory_scope == "task_type" else None
         position, completed = 0, []
         if (root / "commit.json").exists():
             state, completed = load_checkpoint(root)
@@ -219,6 +221,14 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
         for index in range(position, len(entries)):
             log = AttemptLog(trace_root, index)
             try:
+                previous_task = method.current_task
+                reset = method.begin_task(entries[index]["task_type"])
+                if reset:
+                    restore_rng(initial_rng, config)
+                if previous_task != method.current_task:
+                    log.append({"event": "task_boundary", "previous_task": previous_task,
+                                "task_type": method.current_task, "memory_scope": config.memory_scope,
+                                "memory_reset": reset})
                 episode = run_episode(config, entries[index], index, method, log, env_factory)
                 # Evaluation is complete before any adaptation takes place.
                 if config.method == "dc-cumulative":
@@ -232,6 +242,7 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
                     write_json(log.path / "update.json", update)
                 summary = {"position": index, "episode_id": episode.episode_id,
                            "task_type": episode.task_type, "attempt_dir": str(log.path.relative_to(root)),
+                           "memory_scope": config.memory_scope, "memory_reset_before": reset,
                            **episode.outcome, "model_version_after": method.version,
                            "input_tokens": sum(s["input_tokens"] for s in episode.steps),
                            "output_tokens": sum(s["output_tokens"] for s in episode.steps),
@@ -248,8 +259,11 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
                                    cheatsheet_update_accepted=update["accepted"])
                 completed.append(summary)
                 training = config.is_ntp
+                task_end = (index + 1 == len(entries)
+                            or entries[index + 1]["task_type"] != entries[index]["task_type"])
                 save_model = training and ((index + 1) % config.checkpoint_interval == 0
-                                           or index + 1 == len(entries))
+                                           or index + 1 == len(entries)
+                                           or (config.memory_scope == "task_type" and task_end))
                 if not training or save_model:
                     state = {"next_position": index + 1, "method": method.state_dict(),
                              "rng": rng_state(config)}

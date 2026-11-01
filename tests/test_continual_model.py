@@ -76,6 +76,12 @@ class TinyModelTests(unittest.TestCase):
         for method in ("history-ntp-assistant", "history-ntp-assistant-success"):
             config.method = method
             masked_backend = HFBackend(config, model=Qwen3_5ForCausalLM(tiny_config), tokenizer=Tokenizer())
+            from alfworld.continual.methods import Method
+            config.memory_scope = "task_type"
+            config.stream.order = "task_blocked"
+            category_method = Method(config, masked_backend)
+            category_method.begin_task("first")
+            initial = copy.deepcopy(masked_backend.state_dict())
             masked_messages = [
                 {"role": "system", "content": "instructions " * 12},
                 {"role": "user", "content": "Observation: room"},
@@ -102,6 +108,12 @@ class TinyModelTests(unittest.TestCase):
             self.assertEqual(masked_backend.trainer.steps, before["trainer"]["steps"])
             for key, tensor in before["adapter"].items():
                 torch.testing.assert_close(masked_backend.state_dict()["adapter"][key], tensor, rtol=0, atol=0)
+            self.assertTrue(category_method.begin_task("second"))
+            restored = masked_backend.state_dict()
+            self.assertEqual(masked_backend.trainer.steps, 0)
+            self.assertEqual(restored["trainer"]["optimizer"]["state"], {})
+            for key, tensor in initial["adapter"].items():
+                torch.testing.assert_close(restored["adapter"][key], tensor, rtol=0, atol=0)
 
 
         # DC uses the same inference backend with a separate curator budget, no adapter.
