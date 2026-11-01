@@ -5,7 +5,7 @@ import yaml
 
 
 NTP_METHODS = ("history-ntp", "history-ntp-assistant", "history-ntp-assistant-success")
-METHODS = ("memoryless", "icl", *NTP_METHODS)
+METHODS = ("memoryless", "icl", "dc-cumulative", *NTP_METHODS)
 
 
 @dataclass
@@ -47,6 +47,7 @@ class Config:
     window_episodes: int = 4
     max_steps: int = 50
     output_dir: str = "runs/experiment"
+    cheatsheet_max_new_tokens: int = 2048
     checkpoint_interval: int = 10  # training episodes per model/optimizer checkpoint
     stream: StreamConfig = field(default_factory=StreamConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
@@ -79,6 +80,7 @@ class Config:
             "max_new_tokens": self.model.max_new_tokens, "rank": self.training.rank,
             "alpha": self.training.alpha,
             "checkpoint_interval": self.checkpoint_interval,
+            "cheatsheet_max_new_tokens": self.cheatsheet_max_new_tokens,
         }.items():
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")

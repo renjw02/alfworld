@@ -192,6 +192,50 @@ class ProtocolTests(unittest.TestCase):
         self.assertIn("Reasoning:", step["raw_output"])
         self.assertNotIn("Reasoning:", step["executed_action"])
 
+    def test_dc_curator_failure_resume(self):
+        from alfworld.continual.cheatsheet import CURATOR_SYSTEM
+        self.config.method = "dc-cumulative"
+        curator_calls, action_contexts = [], []
+        class Backend(MockBackend):
+            def state_dict(self):
+                raise AssertionError("DC must not snapshot weights")
+            def generate(self, messages, *, max_new_tokens=None):
+                if messages[0]["content"] == CURATOR_SYSTEM:
+                    curator_calls.append(copy.deepcopy(messages))
+                    if len(curator_calls) == 2:
+                        raise RuntimeError("curator interrupted")
+                else:
+                    action_contexts.append(copy.deepcopy(messages))
+                return super().generate(messages, max_new_tokens=max_new_tokens)
+        with self.assertRaisesRegex(RuntimeError, "curator interrupted"):
+            run(self.config, backend_factory=Backend, env_factory=FakeEnv)
+        root = Path(self.config.output_dir)
+        state, rows = load_checkpoint(root)
+        self.assertEqual(state["next_position"], 1)
+        self.assertEqual(state["method"]["cheatsheet_version"], 1)
+        self.assertEqual(state["method"]["version"], 0)
+        self.assertNotIn("backend", state)
+        self.assertIn(state["method"]["cheatsheet"], action_contexts[1][1]["content"])
+        self.assertFalse((root / "checkpoints").exists())
+        first_update = root / rows[0]["attempt_dir"] / "update.json"
+        original = first_update.read_bytes()
+        run(self.config, resume=True, backend_factory=Backend, env_factory=FakeEnv)
+        state, rows = load_checkpoint(root)
+        self.assertEqual(len(curator_calls), 3)  # failed second call plus one retry on resume
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(state["method"]["cheatsheet_version"], 2)
+        self.assertEqual(first_update.read_bytes(), original)
+        self.assertEqual(curator_calls[1], curator_calls[2])
+        self.assertEqual([r["model_version_after"] for r in rows], [0, 0])
+        self.assertEqual([r["training_seconds"] for r in rows], [0, 0])
+        for row in rows:
+            update = json.loads((root / row["attempt_dir"] / "update.json").read_text())
+            self.assertEqual(bytes(update["input_token_ids"]).decode(), update["prompt"])
+            self.assertEqual(row["curator_output_tokens"], len(update["output_token_ids"]))
+            self.assertTrue(row["cheatsheet_update_accepted"])
+        run(self.config, resume=True, backend_factory=Backend, env_factory=FakeEnv)
+        self.assertEqual(len(curator_calls), 3)
+
     def test_training_checkpoint_interval_and_final_save(self):
         self.config.method = "history-ntp"
         self.config.stream.limit = 12
@@ -255,6 +299,7 @@ class ProtocolTests(unittest.TestCase):
         root = Path(self.config.output_dir)
         saved = json.loads((root / "config.json").read_text())
         saved.pop("checkpoint_interval")
+        saved.pop("cheatsheet_max_new_tokens")
         (root / "config.json").write_text(json.dumps(saved))
         state, rows = load_checkpoint(root)
         state["backend"] = {"updates": 0}

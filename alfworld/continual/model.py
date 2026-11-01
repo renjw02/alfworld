@@ -80,14 +80,15 @@ class HFBackend:
         ids = self.tokenizer.encode(text, add_special_tokens=False)
         return text, ids
 
-    def generate(self, messages):
+    def generate(self, messages, *, max_new_tokens=None):
         import torch
         text, ids = self.serialize(messages, True)
+        max_new_tokens = self.config.model.max_new_tokens if max_new_tokens is None else max_new_tokens
         maximum = self.config.model.max_input_tokens
         if len(ids) > maximum:
             raise ValueError(f"Input has {len(ids)} tokens, exceeds {maximum}; history is not silently truncated")
         text_config = getattr(self.model.config, "text_config", self.model.config)
-        if len(ids) + self.config.model.max_new_tokens > text_config.max_position_embeddings:
+        if len(ids) + max_new_tokens > text_config.max_position_embeddings:
             raise ValueError("Input plus reserved output exceeds model context length")
         device = next(self.model.parameters()).device
         inputs = torch.tensor([ids], device=device)
@@ -96,11 +97,11 @@ class HFBackend:
         with torch.inference_mode():
             output = self.model.generate(
                 input_ids=inputs, attention_mask=torch.ones_like(inputs),
-                max_new_tokens=self.config.model.max_new_tokens, do_sample=False,
+                max_new_tokens=max_new_tokens, do_sample=False,
                 use_cache=True, eos_token_id=eos, pad_token_id=self.tokenizer.pad_token_id or eos,
             )
         output_ids = output[0, len(ids):].tolist()
-        truncated = len(output_ids) >= self.config.model.max_new_tokens and output_ids[-1] != eos
+        truncated = len(output_ids) >= max_new_tokens and output_ids[-1] != eos
         # Strip only terminal EOS; preserve any generated control tokens in the raw record.
         decode_ids = output_ids[:-1] if output_ids and output_ids[-1] == eos else output_ids
         return Generation(self.tokenizer.decode(decode_ids, skip_special_tokens=False), text, ids,
@@ -170,8 +171,12 @@ class MockBackend:
         self.config = config
         self.updates = 0
 
-    def generate(self, messages):
+    def generate(self, messages, *, max_new_tokens=None):
         prompt = json.dumps(messages, ensure_ascii=False)
+        from .cheatsheet import CURATOR_SYSTEM
+        if messages[0]["content"] == CURATOR_SYSTEM:
+            text = "<cheatsheet>Mock reference: inspect observations and use current admissible commands.</cheatsheet>"
+            return Generation(text, prompt, list(prompt.encode()), list(text.encode()), 0.0)
         action = "look"
         if "Admissible commands:\n" in messages[-1]["content"]:
             candidates = messages[-1]["content"].split("Admissible commands:\n")[-1].splitlines()

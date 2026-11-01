@@ -104,6 +104,21 @@ class TinyModelTests(unittest.TestCase):
                 torch.testing.assert_close(masked_backend.state_dict()["adapter"][key], tensor, rtol=0, atol=0)
 
 
+        # DC uses the same inference backend with a separate curator budget, no adapter.
+        from unittest.mock import patch
+        config.method = "dc-cumulative"
+        dc_backend = HFBackend(config, model=Qwen3_5ForCausalLM(tiny_config), tokenizer=Tokenizer())
+        self.assertIsNone(dc_backend.trainer)
+        self.assertFalse(any(p.requires_grad for p in dc_backend.model.parameters()))
+        with patch.object(dc_backend.model, "generate", wraps=dc_backend.model.generate) as generate:
+            dc_backend.generate(messages, max_new_tokens=7)
+            self.assertEqual(generate.call_args.kwargs["max_new_tokens"], 7)
+            dc_backend.generate(messages)
+            self.assertEqual(generate.call_args.kwargs["max_new_tokens"], 4)
+        self.assertEqual(config.model.max_new_tokens, 4)
+        with self.assertRaisesRegex(ValueError, "context length"):
+            dc_backend.generate(messages, max_new_tokens=4096)
+
 
 if __name__ == "__main__":
     unittest.main()

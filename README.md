@@ -16,7 +16,7 @@ For the latest updates, see: [**alfworld.github.io**](https://alfworld.github.io
 ## Quickstart
 
 **Streaming continual-learning experiments:** see [the ReAct experiment guide](README-continual.md)
-for memoryless, ICL, and history-NTP with Qwen3.5.
+for memoryless, ICL, DC-Cumulative, and history-NTP with Qwen3.5.
 
 **Text-only with uv (no Conda or GPU):** see [the project-level uv setup guide](README-uv.md)
 for installation, data download, and a runnable Python environment check.

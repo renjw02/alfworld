@@ -32,6 +32,7 @@ uv run --locked --extra continual python -m alfworld.continual \
 | --- | --- | --- |
 | `memoryless` | 当前局完整历史 | 无 |
 | `icl` | 最近 K−1 局 + 当前局完整历史 | 保存本局；淘汰最旧历史 |
+| `dc-cumulative` | 累计 cheatsheet + 当前局完整历史 | 额外调用一次同一模型，更新完整 cheatsheet |
 | `history-ntp` | 当前局完整历史 | 用本局完整文本执行一轮 LoRA NTP |
 | `history-ntp-assistant` | 当前局完整历史 | 所有 episode，仅训练 assistant reasoning/action |
 | `history-ntp-assistant-success` | 当前局完整历史 | 仅成功 episode，训练 assistant reasoning/action |
@@ -92,6 +93,42 @@ manifest 中的 seed、顺序类型、任务块顺序必须与配置一致，否
 `--data-dir /path/to/alfworld` 指定数据根目录。数据路径优先级：CLI > 调用者设置的
 `ALFWORLD_DATA` > YAML。完整参数和训练超参数见 [`configs/continual.yaml`](configs/continual.yaml)。
 
+## Dynamic Cheatsheet（DC-Cumulative）
+
+参考 [上游 DC-Cumulative 实现](https://github.com/suzgunmirac/dynamic-cheatsheet/blob/main/dynamic_cheatsheet/language_model.py)
+和 [curator prompt](https://github.com/suzgunmirac/dynamic-cheatsheet/blob/main/prompts/curator_prompt_for_dc_cumulative.txt)，
+采用每局一次 curator 调用的 ALFWorld 适配版本：
+
+1. 从空 cheatsheet 开始。行动时输入系统指令、当前累计 cheatsheet、当前局完整历史。
+2. 每局结束并记分后，把旧 cheatsheet、本局任务、原始 reasoning/action、环境观察和终局结果
+   交给同一个冻结模型，额外生成一次总结；成功和失败 episode 都执行。
+3. 模型输出一份完整替代旧版的 cheatsheet：保留旧的有效知识，合并新策略、失败教训、
+   示例和 episode 引用，并按证据维护成功使用次数。下一局开始使用新版。
+
+不做梯度更新、不检索旧轨迹，也不在当前局重新解题。curator 使用独立提示词，
+不受行动阶段 ReAct 输出格式约束。提示词针对 ALFWorld 改写，加入环境反馈，
+强调物品 ID、位置和背包状态不能跨局复用；因此这是环境适配版本，并非原论文基准的逐字复现。
+提示词和解析逻辑见 `alfworld/continual/cheatsheet.py`。
+
+```bash
+uv run --locked python -m alfworld.continual \
+  --method dc-cumulative --stream-order shuffled --action-mode admissible \
+  --cheatsheet-max-new-tokens 2048 --output-dir runs/dc-cumulative
+```
+
+`cheatsheet_max_new_tokens` 默认 2048，仅控制 curator 输出（行动输出仍由
+`model.max_new_tokens` 控制）。总结要在预算内包含完整 `<cheatsheet>...</cheatsheet>`；
+输出截断、空内容或标签无效时保留旧版，记录原因，不额外重试。输入超出模型上下文限制
+会显式报错，不静默截断经验。与上游相比，这里的提取器更严格，拒绝不完整的标签和截断输出。
+
+`update.json` 保存总结的完整 messages/prompt、原始输出、token IDs、耗时、接受状态、
+更新前后 cheatsheet 和版本；`curator_request.json` 在调用前写入，便于排查模型调用异常。
+`episodes.csv` 的 `curator_input_tokens`、`curator_output_tokens`、`curator_generation_seconds`
+单独统计总结开销，不混入行动或训练开销。`model_version_after` 始终为 0，
+`cheatsheet_version_after` 记录成功接受的总结次数。
+每局原子保存 cheatsheet 和进度；使用相同参数加 `--resume` 恢复。模型调用异常会中止本次运行，
+恢复时重跑未提交的 episode，已提交局不会重复总结。
+
 ## NTP 和参数设置
 
 通过 `--method history-ntp-assistant` 或 `--method history-ntp-assistant-success`
@@ -129,7 +166,7 @@ model.json                  # 模型文件标识、LoRA 模块和可训练参数
 manifest.json               # 完整 stream
 commit.json                 # 已提交 episode 和最新 checkpoint 指针
 checkpoints/*.pkl            # 仅训练方法：最新 LoRA、优化器、方法和 RNG 状态
-state/*.pkl                  # 轻量恢复状态，不含模型参数（历史、RNG、进度）
+state/*.pkl                  # 轻量恢复状态，不含模型参数（历史、cheatsheet、RNG、进度）
 traces/<UTC启动时间戳>/
   invocation.json           # 本次启动的配置、版本和系统 prompt
   episodes/<序号>/<attempt>/
@@ -137,7 +174,8 @@ traces/<UTC启动时间戳>/
     last_request.json         # 推理异常时也能看到最后一次尝试的输入
     last_generation.json      # 环境调用异常时也能看到最后一次模型输出
     episode.json              # 不含重复推理前缀的完整本局对话
-    update.json               # NTP 文本、token IDs、loss、梯度、更新步数
+    curator_request.json      # 仅 DC：总结调用前保存的输入和预算
+    update.json               # NTP 训练记录，或 DC 总结和 cheatsheet 更新记录
     error.json                # 仅异常尝试存在
 summary.json                # 已提交结果汇总
 episodes.csv                # 逐局指标和累计/滚动成功率
@@ -152,7 +190,8 @@ episodes.csv                # 逐局指标和累计/滚动成功率
 模型 checkpoint 不保存在逐步 traces 中。`checkpoint_interval` 默认 **10**，也可通过
 `--checkpoint-interval 10` 指定，必须为正整数，适用于所有 NTP 方法：每完成 10 个 episode
 保存一次 LoRA 和优化器状态，结束时即使不足 10 局也保存。不会每个训练 step 保存模型。
-`memoryless` 和 `icl` 不保存模型 checkpoint，只在每局结束保存轻量恢复状态；ICL 包含历史对话。
+`memoryless`、`icl` 和 `dc-cumulative` 不保存模型 checkpoint，只在每局结束保存轻量恢复状态；
+ICL 包含历史对话，DC 包含累计 cheatsheet。
 
 只统计 `commit.json` 中的已提交 episode。训练方法在 checkpoint 成功后一次提交对应的一批结果；
 非训练方法逐局提交。中途崩溃的尝试仍保留，但不计入分析。

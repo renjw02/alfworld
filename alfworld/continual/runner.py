@@ -10,6 +10,7 @@ import time
 import traceback
 import numpy as np
 from .environment import TextEnvironment
+from .cheatsheet import curator_messages
 from .logging import AttemptLog, commit_checkpoint, load_checkpoint, run_lock, write_json
 from .methods import Method
 from .model import make_backend
@@ -149,6 +150,7 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             saved_config = json.loads((root / "config.json").read_text())
             # Older runs predate this storage-only setting; their checkpoints remain readable.
             saved_config.setdefault("checkpoint_interval", 10)
+            saved_config.setdefault("cheatsheet_max_new_tokens", 2048)
             if saved_config != config.to_dict():
                 raise ValueError("Resume configuration differs from the saved configuration")
             saved_metadata = json.loads((root / "metadata.json").read_text())
@@ -199,6 +201,12 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             try:
                 episode = run_episode(config, entries[index], index, method, log, env_factory)
                 # Evaluation is complete before any adaptation takes place.
+                if config.method == "dc-cumulative":
+                    write_json(log.path / "curator_request.json", {
+                        "messages": curator_messages(method.cheatsheet, episode, config.cheatsheet_max_new_tokens),
+                        "max_new_tokens": config.cheatsheet_max_new_tokens,
+                        "cheatsheet_version": method.cheatsheet_version,
+                    })
                 update = method.observe_episode(episode)
                 if update is not None:
                     write_json(log.path / "update.json", update)
@@ -212,6 +220,12 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
                            "reasoning_characters": sum(len(s["reasoning"] or "") for s in episode.steps),
                            "generation_seconds": sum(s["generation_seconds"] for s in episode.steps),
                            "training_seconds": update.get("seconds", 0.0) if update else 0.0}
+                if config.method == "dc-cumulative":
+                    summary.update(cheatsheet_version_after=method.cheatsheet_version,
+                                   curator_input_tokens=update["input_tokens"],
+                                   curator_output_tokens=update["output_tokens"],
+                                   curator_generation_seconds=update["generation_seconds"],
+                                   cheatsheet_update_accepted=update["accepted"])
                 completed.append(summary)
                 training = config.is_ntp
                 save_model = training and ((index + 1) % config.checkpoint_interval == 0

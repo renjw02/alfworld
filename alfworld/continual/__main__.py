@@ -23,12 +23,15 @@ def main():
     parser.add_argument("--window-episodes", type=int)
     parser.add_argument("--checkpoint-interval", type=int,
                         help="Save training state every N episodes (default: 10), and at completion")
+    parser.add_argument("--cheatsheet-max-new-tokens", type=int,
+                        help="DC curator output budget (default: 2048 tokens)")
     parser.add_argument("--device")
     parser.add_argument("--backend", choices=["hf", "mock"])
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     config = load_config(args.config)
-    for name in ("method", "action_mode", "output_dir", "max_steps", "window_episodes", "checkpoint_interval"):
+    for name in ("method", "action_mode", "output_dir", "max_steps", "window_episodes", "checkpoint_interval",
+                 "cheatsheet_max_new_tokens"):
         value = getattr(args, name)
         if value is not None:
             setattr(config, name, value)
