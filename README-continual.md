@@ -33,6 +33,8 @@ uv run --locked --extra continual python -m alfworld.continual \
 | `memoryless` | 当前局完整历史 | 无 |
 | `icl` | 最近 K−1 局 + 当前局完整历史 | 保存本局；淘汰最旧历史 |
 | `history-ntp` | 当前局完整历史 | 用本局完整文本执行一轮 LoRA NTP |
+| `history-ntp-assistant` | 当前局完整历史 | 所有 episode，仅训练 assistant reasoning/action |
+| `history-ntp-assistant-success` | 当前局完整历史 | 仅成功 episode，训练 assistant reasoning/action |
 
 `window_episodes` 默认 4，**包含当前局**；K=1 的 ICL 与 memoryless 输入一致。
 所有历史保留 reasoning、action、观察、分数、格式反馈和终局反馈。
@@ -92,6 +94,16 @@ manifest 中的 seed、顺序类型、任务块顺序必须与配置一致，否
 
 ## NTP 和参数设置
 
+通过 `--method history-ntp-assistant` 或 `--method history-ntp-assistant-success`
+选择新增版本。两者保留完整对话作为输入，只对 assistant 原始正文（包括 reasoning、
+action 和 `<think>` 内容）计算 loss；system、user、环境反馈及模板标记的 label
+设为 -100。仅完整落在 assistant 正文内的 token 参与 loss，跨正文边界的 token 被 mask。
+不含有效预测目标的分块跳过更新。`update.json` 保存 `training_labels` 和 `loss_scope`。
+成功版本依据环境记录的 `episode.outcome.success` 筛选，失败局记录跳过原因，
+不更新参数、优化器或模型版本。两个版本均支持 checkpoint/resume。
+
+以下完整文本训练说明针对原有 `history-ntp`：
+
 默认 LoRA rank=16、alpha=32、dropout=0，覆盖语言模型线性层，排除输出头。
 基础模型冻结；不合并 adapter，不回放旧 episode，成功和失败都训练。
 AdamW 默认 lr=1e-5、weight_decay=0、梯度裁剪=1.0，优化器状态跨局保留。
@@ -138,7 +150,7 @@ episodes.csv                # 逐局指标和累计/滚动成功率
 长 ReAct 历史会产生较大的日志，这是为还原实际模型输入保留的审计数据。
 
 模型 checkpoint 不保存在逐步 traces 中。`checkpoint_interval` 默认 **10**，也可通过
-`--checkpoint-interval 10` 指定，必须为正整数，仅影响 `history-ntp`：每完成 10 个 episode
+`--checkpoint-interval 10` 指定，必须为正整数，适用于所有 NTP 方法：每完成 10 个 episode
 保存一次 LoRA 和优化器状态，结束时即使不足 10 局也保存。不会每个训练 step 保存模型。
 `memoryless` 和 `icl` 不保存模型 checkpoint，只在每局结束保存轻量恢复状态；ICL 包含历史对话。
 

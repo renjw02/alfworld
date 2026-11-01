@@ -4,6 +4,10 @@ from pathlib import Path
 import yaml
 
 
+NTP_METHODS = ("history-ntp", "history-ntp-assistant", "history-ntp-assistant-success")
+METHODS = ("memoryless", "icl", *NTP_METHODS)
+
+
 @dataclass
 class StreamConfig:
     order: str = "shuffled"
@@ -48,8 +52,16 @@ class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
 
+    @property
+    def is_ntp(self):
+        return self.method in NTP_METHODS
+
+    @property
+    def assistant_only(self):
+        return self.method in NTP_METHODS[1:]
+
     def validate(self):
-        if self.method not in ("memoryless", "icl", "history-ntp"):
+        if self.method not in METHODS:
             raise ValueError("Unknown method")
         if self.action_mode not in ("free", "admissible"):
             raise ValueError("Unknown action_mode")

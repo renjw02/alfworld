@@ -92,6 +92,34 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(ntp.history, [])
         self.assertEqual(ntp.version, 1)
 
+    def test_assistant_episode_filter(self):
+        for name in ("history-ntp-assistant", "history-ntp-assistant-success"):
+            self.config.method = name
+            self.config.validate()
+            backend = MockBackend(self.config)
+            method = Method(self.config, backend)
+            episode = Episode("one", "task", 0, [{"role": "assistant", "content": "Reasoning: x\nAction: look"}])
+            episode.outcome = {"success": False}
+            result = method.observe_episode(episode)
+            expected = int(name == "history-ntp-assistant")
+            self.assertEqual(backend.updates, expected)
+            self.assertEqual(method.version, expected)
+            self.assertEqual(result.get("skipped", False), not bool(expected))
+            episode.outcome["success"] = True
+            method.observe_episode(episode)
+            self.assertEqual(backend.updates, expected + 1)
+            self.assertEqual(method.version, expected + 1)
+            self.config.output_dir = str(self.root / name)
+            run(self.config, env_factory=FakeEnv)
+            state, completed = load_checkpoint(Path(self.config.output_dir))
+            self.assertEqual(state["backend"]["updates"], 2)
+            self.assertEqual(state["method"]["version"], 2)
+            self.assertEqual(len(completed), 2)
+            run(self.config, resume=True, env_factory=FakeEnv)
+            resumed, rows = load_checkpoint(Path(self.config.output_dir))
+            self.assertEqual(resumed["method"], state["method"])
+            self.assertEqual(rows, completed)
+
     def test_token_target_coverage(self):
         for length in (2, 7, 8, 9, 20):
             ids = list(range(length))

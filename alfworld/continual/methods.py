@@ -21,11 +21,18 @@ class Method:
         if self.config.method == "icl":
             keep = self.config.window_episodes - 1
             self.history = (self.history + [copy.deepcopy(episode.messages)])[-keep:] if keep else []
-        elif self.config.method == "history-ntp":
+        elif self.config.is_ntp:
+            if (self.config.method == "history-ntp-assistant-success"
+                    and not episode.outcome["success"]):
+                return {"skipped": True, "skip_reason": "unsuccessful_episode",
+                        "optimizer_steps": 0, "seconds": 0.0, "loss": None,
+                        "version_before": self.version, "version_after": self.version}
             messages = [system_message(self.config.action_mode), *episode.messages]
             result = self.backend.train_episode(messages)
-            result.update(version_before=self.version, version_after=self.version + 1)
-            self.version += 1
+            result["version_before"] = self.version
+            if not result.get("skipped", False):
+                self.version += 1
+            result["version_after"] = self.version
             return result
         return None
 

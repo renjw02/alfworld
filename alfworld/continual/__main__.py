@@ -4,14 +4,14 @@ import json
 import os
 # alfworld.info initializes this variable during imports; only honor the caller's value.
 DATA_DIR_ENV = os.environ.get("ALFWORLD_DATA")
-from .config import load_config
+from .config import METHODS, load_config
 from .runner import run
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/continual.yaml")
-    parser.add_argument("--method", choices=["memoryless", "icl", "history-ntp"])
+    parser.add_argument("--method", choices=METHODS)
     parser.add_argument("--stream-order", choices=["shuffled", "task_blocked"])
     parser.add_argument("--action-mode", choices=["free", "admissible"])
     parser.add_argument("--output-dir")

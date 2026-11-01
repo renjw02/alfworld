@@ -213,7 +213,7 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
                            "generation_seconds": sum(s["generation_seconds"] for s in episode.steps),
                            "training_seconds": update.get("seconds", 0.0) if update else 0.0}
                 completed.append(summary)
-                training = config.method == "history-ntp"
+                training = config.is_ntp
                 save_model = training and ((index + 1) % config.checkpoint_interval == 0
                                            or index + 1 == len(entries))
                 if not training or save_model:

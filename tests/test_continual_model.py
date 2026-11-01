@@ -28,6 +28,9 @@ class TinyModelTests(unittest.TestCase):
                 return "".join(m["role"] + ":" + m["content"] + "\n" for m in messages) + ("assistant:" if add_generation_prompt else "")
             def encode(self, text, **kwargs):
                 return [3 + ord(c) % 61 for c in text]
+            def __call__(self, text, **kwargs):
+                return {"input_ids": self.encode(text),
+                        "offset_mapping": [(i, i + 1) for i in range(len(text))]}
             def decode(self, ids, **kwargs):
                 return "".join(chr(i + 60) for i in ids)
         config = Config(method="history-ntp")
@@ -70,6 +73,36 @@ class TinyModelTests(unittest.TestCase):
         self.assertLessEqual(len(generated.output_ids), 4)
         self.assertFalse(backend.model.training)
         self.assertTrue(backend.model.config.use_cache)
+        for method in ("history-ntp-assistant", "history-ntp-assistant-success"):
+            config.method = method
+            masked_backend = HFBackend(config, model=Qwen3_5ForCausalLM(tiny_config), tokenizer=Tokenizer())
+            masked_messages = [
+                {"role": "system", "content": "instructions " * 12},
+                {"role": "user", "content": "Observation: room"},
+                {"role": "assistant", "content": "<think>inspect</think>\nReasoning: inspect\nAction: look"},
+                {"role": "user", "content": "Feedback: success"},
+                {"role": "assistant", "content": "Reasoning: done\nAction: look"},
+            ]
+            result = masked_backend.train_episode(masked_messages)
+            text = result["training_text"]
+            expected = set()
+            for message in masked_messages:
+                if message["role"] == "assistant":
+                    start = text.index(message["content"])
+                    expected.update(range(start, start + len(message["content"])))
+            actual = {i for i, label in enumerate(result["training_labels"]) if label != -100}
+            self.assertEqual(actual, expected)
+            self.assertEqual(result["target_tokens"], len(expected))
+            self.assertTrue(torch.isfinite(torch.tensor(result["loss"])))
+            before = copy.deepcopy(masked_backend.state_dict())
+            empty = masked_backend.train_episode(masked_messages[:2])
+            self.assertTrue(empty["skipped"])
+            self.assertEqual(empty["optimizer_steps"], 0)
+            self.assertIsNone(empty["loss"])
+            self.assertEqual(masked_backend.trainer.steps, before["trainer"]["steps"])
+            for key, tensor in before["adapter"].items():
+                torch.testing.assert_close(masked_backend.state_dict()["adapter"][key], tensor, rtol=0, atol=0)
+
 
 
 if __name__ == "__main__":

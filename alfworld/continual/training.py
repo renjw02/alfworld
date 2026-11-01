@@ -1,4 +1,4 @@
-"""Full-transcript NTP with exactly-once next-token targets."""
+"""Full-transcript or assistant-masked NTP with exactly-once next-token targets."""
 import time
 
 
@@ -21,8 +21,11 @@ class NTPTrainer:
         )
         self.steps = 0
 
-    def train(self, token_ids):
+    def train(self, token_ids, labels=None):
         import torch
+        labels = list(token_ids) if labels is None else labels
+        if len(labels) != len(token_ids):
+            raise ValueError("Labels must align with input tokens")
         start = time.perf_counter()
         device = next(self.model.parameters()).device
         self.model.train()
@@ -31,11 +34,17 @@ class NTPTrainer:
         self.model.config.use_cache = False
         records = []
         try:
-            for chunk in token_chunks(token_ids, self.config.chunk_tokens):
+            for chunk, targets in zip(token_chunks(token_ids, self.config.chunk_tokens),
+                                      token_chunks(labels, self.config.chunk_tokens)):
+                target_count = sum(label != -100 for label in targets[1:])
+                if not target_count:
+                    continue
+                target_tensor = torch.tensor([targets], device=device)
+                target_tensor[:, 0] = -100
                 inputs = torch.tensor([chunk], device=device)
                 self.optimizer.zero_grad(set_to_none=True)
                 result = self.model(input_ids=inputs, attention_mask=torch.ones_like(inputs),
-                                    labels=inputs, use_cache=False)
+                                    labels=target_tensor, use_cache=False)
                 if not torch.isfinite(result.loss):
                     raise RuntimeError("Non-finite NTP loss; episode update not committed")
                 result.loss.backward()
@@ -44,8 +53,8 @@ class NTPTrainer:
                 self.optimizer.step()
                 self.steps += 1
                 records.append({"loss": result.loss.item(), "gradient_norm": norm.item(),
-                                "target_tokens": len(chunk) - 1, "optimizer_step": self.steps})
-                del result, inputs
+                                "target_tokens": target_count, "optimizer_step": self.steps})
+                del result, inputs, target_tensor
         finally:
             self.optimizer.zero_grad(set_to_none=True)
             self.model.gradient_checkpointing_disable()
@@ -54,7 +63,8 @@ class NTPTrainer:
         targets = sum(r["target_tokens"] for r in records)
         return {"tokens": len(token_ids), "target_tokens": targets, "chunks": records,
                 "optimizer_steps": len(records), "total_optimizer_steps": self.steps,
-                "loss": sum(r["loss"] * r["target_tokens"] for r in records) / targets,
+                "loss": sum(r["loss"] * r["target_tokens"] for r in records) / targets if targets else None,
+                "skipped": not bool(targets),
                 "seconds": time.perf_counter() - start}
 
     def state_dict(self):

@@ -32,7 +32,7 @@ class HFBackend:
         self.trainer = None
         self.target_modules = []
         self.model.requires_grad_(False)
-        if config.method == "history-ntp":
+        if config.is_ntp:
             from peft import LoraConfig, get_peft_model
             self.model = get_peft_model(model, LoraConfig(
                 task_type="CAUSAL_LM", r=config.training.rank,
@@ -46,7 +46,7 @@ class HFBackend:
         self.model.eval()
         self.model.config.use_cache = True
 
-    def serialize(self, messages, generation):
+    def _render(self, messages, generation):
         # Some Qwen templates strip <think> regions from earlier assistant text.
         # Protect message bodies so even malformed raw generations remain exact.
         protected = []
@@ -61,7 +61,22 @@ class HFBackend:
         # Replace in one pass so text inside a body can never trigger a second replacement.
         import re
         pattern = "|".join(re.escape(marker) for marker in replacements)
-        text = re.sub(pattern, lambda match: replacements[match[0]], text)
+        spans, parts = [], []
+        cursor = length = 0
+        roles = {marker: message["role"] for marker, message in zip(replacements, messages)}
+        for match in re.finditer(pattern, text):
+            prefix, body = text[cursor:match.start()], replacements[match[0]]
+            parts.extend((prefix, body))
+            length += len(prefix)
+            if roles[match[0]] == "assistant":
+                spans.append((length, length + len(body)))
+            length += len(body)
+            cursor = match.end()
+        parts.append(text[cursor:])
+        return "".join(parts), spans
+
+    def serialize(self, messages, generation):
+        text, _ = self._render(messages, generation)
         ids = self.tokenizer.encode(text, add_special_tokens=False)
         return text, ids
 
@@ -94,9 +109,21 @@ class HFBackend:
     def train_episode(self, messages):
         if self.trainer is None:
             raise RuntimeError("Training requested without a LoRA trainer")
-        text, ids = self.serialize(messages, False)
-        result = self.trainer.train(ids)
-        result.update(training_text=text, training_token_ids=ids)
+        text, spans = self._render(messages, False)
+        if self.config.assistant_only:
+            encoded = self.tokenizer(text, add_special_tokens=False, return_offsets_mapping=True)
+            ids = encoded["input_ids"]
+            # Only tokens wholly inside raw assistant bodies are prediction targets.
+            labels = [token if end > start and any(a <= start and end <= b for a, b in spans)
+                      else -100 for token, (start, end) in zip(ids, encoded["offset_mapping"])]
+        else:
+            ids = self.tokenizer.encode(text, add_special_tokens=False)
+            labels = list(ids)
+        if labels:
+            labels[0] = -100
+        result = self.trainer.train(ids, labels)
+        result.update(training_text=text, training_token_ids=ids, training_labels=labels,
+                      loss_scope="assistant" if self.config.assistant_only else "full")
         return result
 
     def state_dict(self):
