@@ -44,8 +44,9 @@ class AttemptLog:
         self.stream.close()
 
 
-def commit_checkpoint(root, state, completed):
-    checkpoint_dir = root / "checkpoints"
+def commit_checkpoint(root, state, completed, model_checkpoint=True):
+    # Inference methods need only conversation/RNG progress, never model weights.
+    checkpoint_dir = root / ("checkpoints" if model_checkpoint else "state")
     checkpoint_dir.mkdir(exist_ok=True)
     previous = json.loads((root / "commit.json").read_text()) if (root / "commit.json").exists() else None
     checkpoint = checkpoint_dir / (uuid.uuid4().hex + ".pkl")
@@ -55,7 +56,8 @@ def commit_checkpoint(root, state, completed):
         os.fsync(stream.fileno())
     # Only this atomic pointer makes the checkpoint and its episode results visible.
     write_json(root / "commit.json", {"schema_version": 1, "next_position": state["next_position"],
-                                     "checkpoint": str(checkpoint.relative_to(root)), "completed": completed})
+                                     "checkpoint": str(checkpoint.relative_to(root)),
+                                     "model_checkpoint": model_checkpoint, "completed": completed})
     if previous:
         (root / previous["checkpoint"]).unlink(missing_ok=True)
 

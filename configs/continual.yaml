@@ -4,6 +4,7 @@ action_mode: free
 window_episodes: 4                 # includes the current episode
 max_steps: 50                      # counts malformed generations too
 output_dir: runs/experiment
+checkpoint_interval: 10            # history-ntp only; also save at completion
 stream:
   order: shuffled                 # shuffled | task_blocked
   seed: 42

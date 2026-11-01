@@ -146,7 +146,10 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
         if (root / "config.json").exists():
             if not resume:
                 raise ValueError("Output directory already contains a run; use --resume or a new directory")
-            if json.loads((root / "config.json").read_text()) != config.to_dict():
+            saved_config = json.loads((root / "config.json").read_text())
+            # Older runs predate this storage-only setting; their checkpoints remain readable.
+            saved_config.setdefault("checkpoint_interval", 10)
+            if saved_config != config.to_dict():
                 raise ValueError("Resume configuration differs from the saved configuration")
             saved_metadata = json.loads((root / "metadata.json").read_text())
             if saved_metadata["packages"] != metadata()["packages"]:
@@ -183,12 +186,13 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
         if (root / "commit.json").exists():
             state, completed = load_checkpoint(root)
             method.load_state_dict(state["method"])
-            backend.load_state_dict(state["backend"])
+            if "backend" in state:
+                backend.load_state_dict(state["backend"])
             restore_rng(state["rng"], config)
             position = state["next_position"]
         else:
             commit_checkpoint(root, {"next_position": 0, "method": method.state_dict(),
-                                    "backend": backend.state_dict(), "rng": rng_state(config)}, [])
+                                    "rng": rng_state(config)}, [], model_checkpoint=False)
         entries = manifest["episodes"][:config.stream.limit]
         for index in range(position, len(entries)):
             log = AttemptLog(trace_root, index)
@@ -208,10 +212,17 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
                            "reasoning_characters": sum(len(s["reasoning"] or "") for s in episode.steps),
                            "generation_seconds": sum(s["generation_seconds"] for s in episode.steps),
                            "training_seconds": update.get("seconds", 0.0) if update else 0.0}
-                commit_checkpoint(root, {"next_position": index + 1, "method": method.state_dict(),
-                                        "backend": backend.state_dict(), "rng": rng_state(config)},
-                                  [*completed, summary])
                 completed.append(summary)
+                training = config.method == "history-ntp"
+                save_model = training and ((index + 1) % config.checkpoint_interval == 0
+                                           or index + 1 == len(entries))
+                if not training or save_model:
+                    state = {"next_position": index + 1, "method": method.state_dict(),
+                             "rng": rng_state(config)}
+                    if save_model:
+                        state["backend"] = backend.state_dict()
+                    # Training results become committed only with their matching weights.
+                    commit_checkpoint(root, state, completed, model_checkpoint=save_model)
                 print(f"[{index + 1}/{len(entries)}] {config.method}: {episode.outcome}", flush=True)
             except BaseException as exc:
                 write_json(log.path / "error.json", {"type": type(exc).__name__, "message": str(exc),

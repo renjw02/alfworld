@@ -11,7 +11,7 @@ from alfworld.continual.stream import build_manifest, validate_manifest
 from alfworld.continual.training import token_chunks
 from alfworld.continual.types import Episode, Generation
 from alfworld.continual.runner import run
-from alfworld.continual.logging import load_checkpoint
+from alfworld.continual.logging import load_checkpoint, commit_checkpoint
 from alfworld.agents.environment.alfred_tw_env import TASK_TYPES
 
 
@@ -51,6 +51,11 @@ class ProtocolTests(unittest.TestCase):
     def test_default_config(self):
         config = load_config("configs/continual.yaml").validate()
         self.assertEqual(config.model.max_new_tokens, 1024)
+        self.assertEqual(config.checkpoint_interval, 10)
+        for invalid in (0, -1, True, 1.5):
+            config.checkpoint_interval = invalid
+            with self.assertRaisesRegex(ValueError, "checkpoint_interval"):
+                config.validate()
 
     def test_react(self):
         parsed = parse_react("Reasoning: First inspect.\nThen take it.\nAction: look\n")
@@ -121,6 +126,7 @@ class ProtocolTests(unittest.TestCase):
 
     def test_interrupted_update_resume(self):
         self.config.method = "history-ntp"
+        self.config.checkpoint_interval = 1
         class FailingBackend(MockBackend):
             def train_episode(self, messages):
                 result = super().train_episode(messages)
@@ -152,6 +158,108 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(bytes(step["input_token_ids"]).decode(), step["prompt"])
         self.assertIn("Reasoning:", step["raw_output"])
         self.assertNotIn("Reasoning:", step["executed_action"])
+
+    def test_training_checkpoint_interval_and_final_save(self):
+        self.config.method = "history-ntp"
+        self.config.stream.limit = 12
+        snapshots = []
+        class Backend(MockBackend):
+            def state_dict(self):
+                snapshots.append(self.updates)
+                return super().state_dict()
+            def train_episode(self, messages):
+                result = super().train_episode(messages)
+                if self.updates == 12:
+                    raise RuntimeError("interrupted before final checkpoint")
+                return result
+        with self.assertRaisesRegex(RuntimeError, "interrupted"):
+            run(self.config, backend_factory=Backend, env_factory=FakeEnv)
+        root = Path(self.config.output_dir)
+        state, rows = load_checkpoint(root)
+        self.assertEqual(snapshots, [10])
+        self.assertEqual(state["next_position"], 10)
+        self.assertEqual(state["backend"]["updates"], 10)
+        self.assertEqual(len(rows), 10)
+        # Episode 11 has traces, but cannot be committed without its trained weights.
+        old_traces = {p: p.read_bytes() for p in root.glob("traces/*/episodes/*/*/steps.jsonl")}
+        class ResumedBackend(MockBackend):
+            def state_dict(self):
+                snapshots.append(self.updates)
+                return super().state_dict()
+        run(self.config, resume=True, backend_factory=ResumedBackend, env_factory=FakeEnv)
+        state, rows = load_checkpoint(root)
+        self.assertEqual(snapshots, [10, 12])
+        self.assertEqual(state["backend"]["updates"], 12)
+        self.assertEqual([r["position"] for r in rows], list(range(12)))
+        self.assertEqual(len(list(root.glob("checkpoints/*.pkl"))), 1)
+        for path, contents in old_traces.items():
+            self.assertEqual(path.read_bytes(), contents)
+
+    def test_training_resume_before_first_checkpoint(self):
+        self.config.method = "history-ntp"
+        class FailingBackend(MockBackend):
+            def train_episode(self, messages):
+                super().train_episode(messages)
+                raise RuntimeError("before checkpoint")
+        with self.assertRaisesRegex(RuntimeError, "before checkpoint"):
+            run(self.config, backend_factory=FailingBackend, env_factory=FakeEnv)
+        root = Path(self.config.output_dir)
+        state, rows = load_checkpoint(root)
+        self.assertNotIn("backend", state)
+        self.assertEqual(rows, [])
+        self.assertFalse((root / "checkpoints").exists())
+        run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
+        state, rows = load_checkpoint(root)
+        self.assertEqual(state["backend"]["updates"], 2)
+        self.assertEqual(len(rows), 2)
+
+    def test_legacy_config_and_checkpoint_resume(self):
+        class FailingBackend(MockBackend):
+            def generate(self, messages):
+                raise RuntimeError("legacy interruption")
+        with self.assertRaisesRegex(RuntimeError, "legacy interruption"):
+            run(self.config, backend_factory=FailingBackend, env_factory=FakeEnv)
+        root = Path(self.config.output_dir)
+        saved = json.loads((root / "config.json").read_text())
+        saved.pop("checkpoint_interval")
+        (root / "config.json").write_text(json.dumps(saved))
+        state, rows = load_checkpoint(root)
+        state["backend"] = {"updates": 0}
+        commit_checkpoint(root, state, rows)
+        pointer = json.loads((root / "commit.json").read_text())
+        pointer.pop("model_checkpoint")
+        (root / "commit.json").write_text(json.dumps(pointer))
+        run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
+        state, rows = load_checkpoint(root)
+        self.assertEqual(len(rows), 2)
+        self.assertNotIn("backend", state)
+        self.assertEqual(list(root.glob("checkpoints/*.pkl")), [])
+
+    def test_inference_resume_without_model_checkpoint(self):
+        for method in ("memoryless", "icl"):
+            with self.subTest(method=method):
+                self.config.method = method
+                self.config.output_dir = str(self.root / method)
+                class Backend(MockBackend):
+                    def state_dict(self):
+                        raise AssertionError("Inference must never snapshot model state")
+                class FailingBackend(Backend):
+                    calls = 0
+                    def generate(self, messages):
+                        self.calls += 1
+                        if self.calls == 2:
+                            raise RuntimeError("interrupted inference")
+                        return super().generate(messages)
+                with self.assertRaisesRegex(RuntimeError, "interrupted inference"):
+                    run(self.config, backend_factory=FailingBackend, env_factory=FakeEnv)
+                root = Path(self.config.output_dir)
+                state, rows = load_checkpoint(root)
+                self.assertEqual(state["next_position"], 1)
+                self.assertNotIn("backend", state)
+                self.assertEqual(len(state["method"]["history"]), 1 if method == "icl" else 0)
+                run(self.config, resume=True, backend_factory=Backend, env_factory=FakeEnv)
+                self.assertFalse((root / "checkpoints").exists())
+                self.assertEqual(len(load_checkpoint(root)[1]), 2)
 
     def test_malformed_output_counts_without_environment_step(self):
         class MalformedBackend(MockBackend):

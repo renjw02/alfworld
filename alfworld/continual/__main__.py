@@ -21,12 +21,14 @@ def main():
     parser.add_argument("--limit", type=int)
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--window-episodes", type=int)
+    parser.add_argument("--checkpoint-interval", type=int,
+                        help="Save training state every N episodes (default: 10), and at completion")
     parser.add_argument("--device")
     parser.add_argument("--backend", choices=["hf", "mock"])
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     config = load_config(args.config)
-    for name in ("method", "action_mode", "output_dir", "max_steps", "window_episodes"):
+    for name in ("method", "action_mode", "output_dir", "max_steps", "window_episodes", "checkpoint_interval"):
         value = getattr(args, name)
         if value is not None:
             setattr(config, name, value)

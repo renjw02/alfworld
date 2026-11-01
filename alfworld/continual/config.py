@@ -43,6 +43,7 @@ class Config:
     window_episodes: int = 4
     max_steps: int = 50
     output_dir: str = "runs/experiment"
+    checkpoint_interval: int = 10  # training episodes per model/optimizer checkpoint
     stream: StreamConfig = field(default_factory=StreamConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
@@ -65,6 +66,7 @@ class Config:
             "max_input_tokens": self.model.max_input_tokens,
             "max_new_tokens": self.model.max_new_tokens, "rank": self.training.rank,
             "alpha": self.training.alpha,
+            "checkpoint_interval": self.checkpoint_interval,
         }.items():
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")

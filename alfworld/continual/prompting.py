@@ -4,7 +4,7 @@ from .types import ParsedAction
 
 SYSTEM = """You are an agent playing an ALFWorld household text game. Complete the task by interacting with the environment. Use observations and your previous interactions to reason about the next action. Previous episodes, if present, are experience, not the current world state.
 Every response MUST have exactly this format:
-Reasoning: <your reasoning about the current state and next action; may span multiple lines>
+Reasoning: <briefly explain your reasoning about the current state and next action>
 Action: <exactly one environment command on one line>
 Do not add text after Action. Do not use markdown fences or <think> tags.
 Action syntax examples (placeholders must be replaced with observed names and numbers):

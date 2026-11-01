@@ -116,7 +116,8 @@ metadata.json               # Git 状态、依赖版本、实验协议
 model.json                  # 模型文件标识、LoRA 模块和可训练参数量
 manifest.json               # 完整 stream
 commit.json                 # 已提交 episode 和最新 checkpoint 指针
-checkpoints/*.pkl            # 最新边界状态（含方法、RNG、LoRA、优化器）
+checkpoints/*.pkl            # 仅训练方法：最新 LoRA、优化器、方法和 RNG 状态
+state/*.pkl                  # 轻量恢复状态，不含模型参数（历史、RNG、进度）
 traces/<UTC启动时间戳>/
   invocation.json           # 本次启动的配置、版本和系统 prompt
   episodes/<序号>/<attempt>/
@@ -136,8 +137,14 @@ episodes.csv                # 逐局指标和累计/滚动成功率
 实际执行动作、前后观察、候选动作、分数、成功/结束状态和耗时。每步 flush 并 fsync。
 长 ReAct 历史会产生较大的日志，这是为还原实际模型输入保留的审计数据。
 
-只统计 `commit.json` 中的已提交 episode。更新和 checkpoint 成功后才原子提交该局；
-中途崩溃的尝试仍保留，但不计入分析。使用**完全相同的配置和覆盖参数**追加 `--resume`：
+模型 checkpoint 不保存在逐步 traces 中。`checkpoint_interval` 默认 **10**，也可通过
+`--checkpoint-interval 10` 指定，必须为正整数，仅影响 `history-ntp`：每完成 10 个 episode
+保存一次 LoRA 和优化器状态，结束时即使不足 10 局也保存。不会每个训练 step 保存模型。
+`memoryless` 和 `icl` 不保存模型 checkpoint，只在每局结束保存轻量恢复状态；ICL 包含历史对话。
+
+只统计 `commit.json` 中的已提交 episode。训练方法在 checkpoint 成功后一次提交对应的一批结果；
+非训练方法逐局提交。中途崩溃的尝试仍保留，但不计入分析。
+使用**完全相同的配置和覆盖参数**追加 `--resume`：
 
 ```bash
 uv run --locked --extra continual python -m alfworld.continual \
@@ -146,9 +153,12 @@ uv run --locked --extra continual python -m alfworld.continual \
   --output-dir runs/ntp-shuffled-free --resume
 ```
 
-恢复验证配置、依赖版本、模型标识和数据摘要，从上一已提交局边界重做未完成局，
-防止重复学习。checkpoint 为本项目生成的本地 pickle，只加载可信运行目录。
+恢复验证配置、依赖版本、模型标识和数据摘要，从上一已提交边界继续。
+训练方法恢复到最近 checkpoint 的权重，重跑之后未提交的 episode（默认最多 9 个已完成局，
+以及中断中的当前局）；旧 traces 保留，不会重复统计或在已经更新的权重上重复学习。
+尚无训练 checkpoint 时从初始模型重跑。checkpoint 为本项目生成的本地 pickle，只加载可信运行目录。
 默认仅保留最新 checkpoint；最终完成后该文件就是最终 LoRA/优化器状态。
+旧版每局保存的 checkpoint 仍可恢复；旧配置缺少 `checkpoint_interval` 时按 10 处理。
 
 重新生成分析（不加载模型）：
 
