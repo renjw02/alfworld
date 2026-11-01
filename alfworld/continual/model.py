@@ -5,6 +5,7 @@ from pathlib import Path
 import time
 from .types import Generation
 from .training import NTPTrainer
+from .context import fit_context
 
 
 def layer_device_map(num_layers, devices):
@@ -112,14 +113,13 @@ class HFBackend:
 
     def generate(self, messages, *, max_new_tokens=None):
         import torch
-        text, ids = self.serialize(messages, True)
         max_new_tokens = self.config.model.max_new_tokens if max_new_tokens is None else max_new_tokens
-        maximum = self.config.model.max_input_tokens
-        if len(ids) > maximum:
-            raise ValueError(f"Input has {len(ids)} tokens, exceeds {maximum}; history is not silently truncated")
         text_config = getattr(self.model.config, "text_config", self.model.config)
-        if len(ids) + max_new_tokens > text_config.max_position_embeddings:
-            raise ValueError("Input plus reserved output exceeds model context length")
+        maximum = min(self.config.model.max_input_tokens, text_config.max_position_embeddings - max_new_tokens)
+        if maximum < 1:
+            raise ValueError("Output budget exceeds model context length and leaves no input space")
+        input_messages, text, ids, truncation = fit_context(
+            messages, maximum, self.serialize, self.tokenizer, self.config.model.context_overflow)
         device = next(self.model.parameters()).device
         inputs = torch.tensor([ids], device=device)
         eos = self.tokenizer.eos_token_id
@@ -135,7 +135,7 @@ class HFBackend:
         # Strip only terminal EOS; preserve any generated control tokens in the raw record.
         decode_ids = output_ids[:-1] if output_ids and output_ids[-1] == eos else output_ids
         return Generation(self.tokenizer.decode(decode_ids, skip_special_tokens=False), text, ids,
-                          output_ids, time.perf_counter() - start, truncated)
+                          output_ids, time.perf_counter() - start, truncated, truncation, input_messages)
 
     def train_episode(self, messages):
         if self.trainer is None:

@@ -20,7 +20,8 @@ model:
   devices: []                     # inference only; e.g. [cuda:0, cuda:1] for layer sharding
   gpu_memory_gib: []               # optional allocator cap for each entry in devices
   backend: hf                     # mock is ONLY for control-flow testing
-  max_input_tokens: 100000
+  max_input_tokens: 65536
+  context_overflow: truncate_oldest # preserve system prompt; discard oldest history first
   max_new_tokens: 1024             # reasoning and action together
 training:
   rank: 16

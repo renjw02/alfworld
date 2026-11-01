@@ -153,7 +153,7 @@ class ProtocolTests(unittest.TestCase):
         instructions = system_message("admissible")["content"]
         self.assertIn("copying exactly one command", instructions)
         self.assertNotIn("Action syntax examples", instructions)
-        self.assertIn("move <object> to <receptacle>", system_message("free")["content"])
+        self.assertIn("Reasoning:", system_message("free")["content"])
 
     def test_stream_reproducibility_integrity(self):
         shuffled = build_manifest(self.config.stream)

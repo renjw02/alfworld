@@ -19,7 +19,7 @@ uv run --locked --extra continual python -m alfworld.continual \
 
 默认 BF16，不量化；选择有足够显存的 GPU。加载前要求至少 24 GiB 空闲显存，
 这只是最低检查，不代表长上下文或训练的显存保证；完整实验建议使用空闲 H100 80GB。
-输入过长、显存不足、模型加载不完整时直接报错，不静默量化或截断历史。
+默认超长输入按下文规则删除最旧历史并记录截断；显存不足、模型加载不完整时直接报错，不静默量化。
 
 推理方法支持跨 GPU 按连续 decoder 层分配（不是张量并行，也不保证加速）。例如
 `--devices cuda:0 cuda:1 --gpu-memory-gib 32 24`，或在 `model.devices` 和
@@ -27,7 +27,7 @@ uv run --locked --extra continual python -m alfworld.continual \
 模型的输入设备须为列表第一项。每卡实际分配上限取配置值与当时空闲显存减 3 GiB 的较小值。
 不进行 CPU offload 或量化，当前不支持用此模式训练 NTP。
 模型层拆分可减少每卡权重和缓存，但单层长输入的临时张量仍可能导致 OOM，
-因此不能仅凭卡数保证 100K 上下文可运行。
+因此不能仅凭卡数保证目标上下文长度可运行。
 
 推理恢复时允许更改上述 GPU 布局，任务、窗口和解码配置仍必须一致。
 每次启动的 `invocation.json` 和 `placement.json` 记录有效配置和实际层分布；
@@ -61,8 +61,14 @@ Action: go to countertop 1
 ```
 
 默认 greedy decoding，关闭模型 chat template 的内置 thinking，使用显式 `Reasoning:`。
-输出预算 **1024 tokens**，同时包含 reasoning 和 action。默认输入预算 100000 tokens，
-额外预留输出空间；超过预算就报错，不偷偷缩短配置指定的 ICL 窗口。
+输出预算 **1024 tokens**，同时包含 reasoning 和 action。默认输入预算 **65536 tokens**，
+额外预留输出空间。`model.context_overflow: truncate_oldest` 默认保留系统指令，优先删除最旧的
+完整对话轮次，直到输入落入预算；最新单条观察仍过长时，从其正文开头删除 token，保留末尾的
+近期反馈和合法命令。截断只改变本次推理输入，不删除原始 episode traces 或 NTP 训练文本。
+ICL 的 K 是最多保留的 episode 数，实际输入还受 token 预算约束。
+`steps.jsonl` 的 `messages`、`prompt` 和 token IDs 对应实际送入模型的截断后内容；
+`input_truncation` 记录原始/实际 token 数、丢弃消息数及正文截断 token 数。
+`last_request.json` 保留该步截断前的完整请求。设置 `context_overflow: error` 可恢复超限报错行为。
 
 Reasoning 可多行，Action 必须是最后一行且仅出现一次。只执行 action，绝不把 reasoning
 交给环境。缺失字段、格式错误或达到输出上限而未输出 EOS 时，不执行动作，返回格式反馈；
@@ -70,7 +76,7 @@ Reasoning 可多行，Action 必须是最后一行且仅出现一次。只执行
 
 动作模式可配置：
 
-- `free`：给出固定动作语法，不展示当前合法动作列表。
+- `free`：给出 ReAct 输出格式，不展示当前合法动作列表。
 - `admissible`（默认）：每步直接展示环境给出的当前合法动作列表，要求原样选择其中一条；不附带通用动作语法示例。
 
 两种模式都将合法动作列表保存到日志以便分析，不提供专家解法或额外评审。
@@ -130,8 +136,9 @@ uv run --locked python -m alfworld.continual \
 
 `cheatsheet_max_new_tokens` 默认 2048，仅控制 curator 输出（行动输出仍由
 `model.max_new_tokens` 控制）。总结要在预算内包含完整 `<cheatsheet>...</cheatsheet>`；
-输出截断、空内容或标签无效时保留旧版，记录原因，不额外重试。输入超出模型上下文限制
-会显式报错，不静默截断经验。与上游相比，这里的提取器更严格，拒绝不完整的标签和截断输出。
+输出截断、空内容或标签无效时保留旧版，记录原因，不额外重试。curator 输入同样遵循
+`model.context_overflow`，并在更新日志记录输入截断。与上游相比，这里的提取器更严格，
+拒绝不完整的标签和截断输出。
 
 `update.json` 保存总结的完整 messages/prompt、原始输出、token IDs、耗时、接受状态、
 更新前后 cheatsheet 和版本；`curator_request.json` 在调用前写入，便于排查模型调用异常。

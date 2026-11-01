@@ -10,6 +10,8 @@ class Generation:
     output_ids: list[int]
     seconds: float
     truncated: bool = False
+    input_truncation: dict | None = None
+    input_messages: list[dict] | None = None
 
 
 @dataclass

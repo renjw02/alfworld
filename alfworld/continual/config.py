@@ -25,7 +25,8 @@ class ModelConfig:
     device: str = "cuda:0"
     devices: list[str] = field(default_factory=list)  # optional contiguous layer sharding
     gpu_memory_gib: list[float] = field(default_factory=list)  # allocator caps per device
-    max_input_tokens: int = 100000
+    max_input_tokens: int = 65536
+    context_overflow: str = "truncate_oldest"
     max_new_tokens: int = 1024
     # Test backend exercises the real runner/environment without loading weights.
     backend: str = "hf"
@@ -76,6 +77,8 @@ class Config:
             raise ValueError("task_order must be a permutation of 1..6")
         if self.model.backend not in ("hf", "mock"):
             raise ValueError("Unknown model backend")
+        if self.model.context_overflow not in ("truncate_oldest", "error"):
+            raise ValueError("Unknown model.context_overflow policy")
         if self.model.devices:
             if self.is_ntp:
                 raise ValueError("Multi-GPU layer sharding is supported for inference methods only")

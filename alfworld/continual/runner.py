@@ -94,7 +94,9 @@ def run_episode(config, entry, position, method, log, env_factory=TextEnvironmen
             prior_observation = observation
             prior_commands = commands[:]
             record = {"event": "step", "step": step, "model_version": method.version,
-                      "observation": prior_observation, "messages": messages, "prompt": generated.prompt,
+                      "observation": prior_observation,
+                      "messages": generated.input_messages if generated.input_messages is not None else messages,
+                      "input_truncation": generated.input_truncation, "prompt": generated.prompt,
                       "input_token_ids": generated.input_ids, "output_token_ids": generated.output_ids,
                       "input_tokens": len(generated.input_ids), "output_tokens": len(generated.output_ids),
                       "raw_output": generated.text, "reasoning": parsed.reasoning, "action": parsed.action,
@@ -158,6 +160,7 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             saved_config.setdefault("cheatsheet_max_new_tokens", 2048)
             saved_config["model"].setdefault("devices", [])
             saved_config["model"].setdefault("gpu_memory_gib", [])
+            saved_config["model"].setdefault("context_overflow", "error")
             current_config = config.to_dict()
             if not config.is_ntp:
                 # Placement changes are recorded per invocation, not experiment semantics.
