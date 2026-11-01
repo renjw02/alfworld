@@ -1,0 +1,4 @@
+torch>=2.6; python_version >= '3.11'
+transformers>=5.2,<6; python_version >= '3.11'
+peft>=0.18,<1; python_version >= '3.11'
+accelerate>=1.0; python_version >= '3.11'

@@ -8,3 +8,7 @@ include alfworld/data/alfred.pddl
 include alfworld/data/alfred.twl2
 include alfworld/gen/layouts/*
 include alfworld/agents/config/rewards.json
+
+include requirements-continual.txt
+include README-continual.md
+include configs/continual.yaml

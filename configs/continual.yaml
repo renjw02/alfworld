@@ -1,0 +1,28 @@
+# Every method starts from the same base model in its own output directory.
+method: memoryless                 # memoryless | icl | history-ntp
+action_mode: free
+window_episodes: 4                 # includes the current episode
+max_steps: 50                      # counts malformed generations too
+output_dir: runs/experiment
+stream:
+  order: shuffled                 # shuffled | task_blocked
+  seed: 42
+  task_order: [1, 2, 3, 4, 5, 6]  # used by task_blocked
+  data_dir: ~/.cache/alfworld      # CLI --data-dir or ALFWORLD_DATA may override
+  split: valid_seen
+  manifest: null                  # reuse a saved manifest.json
+  limit: null                     # full stream; set a small number for smoke tests
+model:
+  path: /data/jiawei/models/Qwen3.5-9B
+  device: cuda:0
+  backend: hf                     # mock is ONLY for control-flow testing
+  max_input_tokens: 32768
+  max_new_tokens: 1024             # reasoning and action together
+training:
+  rank: 16
+  alpha: 32
+  dropout: 0.0
+  learning_rate: 0.00001
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  chunk_tokens: 2048
