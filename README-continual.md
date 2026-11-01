@@ -117,16 +117,20 @@ model.json                  # 模型文件标识、LoRA 模块和可训练参数
 manifest.json               # 完整 stream
 commit.json                 # 已提交 episode 和最新 checkpoint 指针
 checkpoints/*.pkl            # 最新边界状态（含方法、RNG、LoRA、优化器）
-episodes/<序号>/<attempt>/
-  steps.jsonl               # reset、每步交互和终局事件
-  last_request.json         # 推理异常时也能看到最后一次尝试的输入
-  last_generation.json      # 环境调用异常时也能看到最后一次模型输出
-  episode.json              # 不含重复推理前缀的完整本局对话
-  update.json               # NTP 文本、token IDs、loss、梯度、更新步数
-  error.json                # 仅异常尝试存在
+traces/<UTC启动时间戳>/
+  invocation.json           # 本次启动的配置、版本和系统 prompt
+  episodes/<序号>/<attempt>/
+    steps.jsonl               # reset、每步交互和终局事件
+    last_request.json         # 推理异常时也能看到最后一次尝试的输入
+    last_generation.json      # 环境调用异常时也能看到最后一次模型输出
+    episode.json              # 不含重复推理前缀的完整本局对话
+    update.json               # NTP 文本、token IDs、loss、梯度、更新步数
+    error.json                # 仅异常尝试存在
 summary.json                # 已提交结果汇总
 episodes.csv                # 逐局指标和累计/滚动成功率
 ```
+
+每次启动（包括 `--resume`）新建一个 UTC 时间戳 traces 子目录，集中保存该次启动的所有 episode traces；旧目录保留。检查点和提交索引仍在实验根目录，分析按 `attempt_dir` 查找记录，兼容旧目录结构。正在运行的旧进程不会改变日志路径。
 
 逐步日志包含精确 prompt/messages、输入和输出 token IDs、原始输出、reasoning、解析 action、
 实际执行动作、前后观察、候选动作、分数、成功/结束状态和耗时。每步 flush 并 fsync。

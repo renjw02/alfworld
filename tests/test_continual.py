@@ -134,15 +134,19 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(state["next_position"], 1)
         self.assertEqual(state["backend"]["updates"], 1)
         self.assertEqual(len(rows), 1)
+        original_traces = {p: p.read_bytes() for p in root.glob("traces/*/episodes/*/*/steps.jsonl")}
         result = run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
+        self.assertEqual(len(list(root.glob("traces/*/invocation.json"))), 2)
+        for path, contents in original_traces.items():
+            self.assertEqual(path.read_bytes(), contents)
         self.assertEqual(result["episodes"], 2)
         state, rows = load_checkpoint(root)
         self.assertEqual(state["backend"]["updates"], 2)
         self.assertEqual([r["model_version_after"] for r in rows], [1, 2])
-        self.assertEqual(len(list(root.glob("episodes/0001/*/steps.jsonl"))), 2)
+        self.assertEqual(len(list(root.glob("traces/*/episodes/0001/*/steps.jsonl"))), 2)
         # Already complete resume never generates or trains again.
         run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
-        self.assertEqual(len(list(root.glob("episodes/0001/*/steps.jsonl"))), 2)
+        self.assertEqual(len(list(root.glob("traces/*/episodes/0001/*/steps.jsonl"))), 2)
         committed_log = root / rows[1]["attempt_dir"] / "steps.jsonl"
         step = [json.loads(line) for line in committed_log.read_text().splitlines() if json.loads(line)["event"] == "step"][0]
         self.assertEqual(bytes(step["input_token_ids"]).decode(), step["prompt"])

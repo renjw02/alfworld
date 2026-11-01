@@ -1,4 +1,5 @@
 """Sequential evaluate-then-update protocol with transactional episode commits."""
+from datetime import datetime, timezone
 import importlib.metadata
 import json
 from pathlib import Path
@@ -12,7 +13,7 @@ from .environment import TextEnvironment
 from .logging import AttemptLog, commit_checkpoint, load_checkpoint, run_lock, write_json
 from .methods import Method
 from .model import make_backend
-from .prompting import initial_message, observation_message, parse_react, terminal_message
+from .prompting import initial_message, observation_message, parse_react, terminal_message, system_message
 from .stream import data_root, prepare_manifest, validate_manifest
 from .types import Episode
 
@@ -160,6 +161,15 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             write_json(root / "manifest.json", manifest)
             write_json(root / "config.json", config.to_dict())
             write_json(root / "metadata.json", metadata())
+        # Keep all traces from one invocation together, including resumed attempts.
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        trace_root = root / "traces" / stamp
+        trace_root.mkdir(parents=True, exist_ok=False)
+        write_json(trace_root / "invocation.json", {
+            "started_at_utc": stamp, "resume": resume, "config": config.to_dict(),
+            "metadata": metadata(), "system_message": system_message(config.action_mode),
+        })
+        print(f"Execution traces: {trace_root}", flush=True)
         seed_all(config.stream.seed, config)
         backend = backend_factory(config)
         backend_metadata = backend.metadata()
@@ -181,7 +191,7 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
                                     "backend": backend.state_dict(), "rng": rng_state(config)}, [])
         entries = manifest["episodes"][:config.stream.limit]
         for index in range(position, len(entries)):
-            log = AttemptLog(root, index)
+            log = AttemptLog(trace_root, index)
             try:
                 episode = run_episode(config, entries[index], index, method, log, env_factory)
                 # Evaluation is complete before any adaptation takes place.
