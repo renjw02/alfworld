@@ -19,7 +19,7 @@ class StreamConfig:
 class ModelConfig:
     path: str = "/data/jiawei/models/Qwen3.5-9B"
     device: str = "cuda:0"
-    max_input_tokens: int = 32768
+    max_input_tokens: int = 100000
     max_new_tokens: int = 1024
     # Test backend exercises the real runner/environment without loading weights.
     backend: str = "hf"

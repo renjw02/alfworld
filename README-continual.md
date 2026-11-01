@@ -46,7 +46,7 @@ Action: go to countertop 1
 ```
 
 默认 greedy decoding，关闭模型 chat template 的内置 thinking，使用显式 `Reasoning:`。
-输出预算 **1024 tokens**，同时包含 reasoning 和 action。默认输入预算 32768 tokens，
+输出预算 **1024 tokens**，同时包含 reasoning 和 action。默认输入预算 100000 tokens，
 额外预留输出空间；超过预算就报错，不偷偷缩短配置指定的 ICL 窗口。
 
 Reasoning 可多行，Action 必须是最后一行且仅出现一次。只执行 action，绝不把 reasoning

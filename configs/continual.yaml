@@ -16,7 +16,7 @@ model:
   path: /data/jiawei/models/Qwen3.5-9B
   device: cuda:0
   backend: hf                     # mock is ONLY for control-flow testing
-  max_input_tokens: 32768
+  max_input_tokens: 100000
   max_new_tokens: 1024             # reasoning and action together
 training:
   rank: 16
