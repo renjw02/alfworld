@@ -63,6 +63,7 @@ class AscentModelTests(unittest.TestCase):
     def test_exact_prefix_updates_teacher_freeze_and_resume(self):
         import torch
         from transformers import Qwen3_5TextConfig, Qwen3_5ForCausalLM
+        torch.set_num_threads(2)
         torch.manual_seed(42)
         config = Config(method="ascent")
         config.model.device = "cpu"

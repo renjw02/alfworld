@@ -236,7 +236,8 @@ ASCENT 复用训练方法的 checkpoint 提交和恢复语义：每 10 局、最
 梯度范数、目标 token 数、耗时和版本；逐步日志与 `episode.json` 保留精确训练前缀。
 
 新增测试覆盖 KL 方向、teacher 冻结、token 对齐、无效轮次过滤、成功门控、分块等价性、
-LoRA 更新、恢复与 runner 集成。测试命令（实现提交时尚未执行）：
+LoRA 更新、恢复与 runner 集成。2026-11-02 执行以下套件，23 项测试全部通过
+（CPU 小型随机 Qwen3.5 + mock 环境调度；未运行完整 9B 或正式实验）。测试命令：
 
 ```bash
 uv run --locked --extra continual python -m unittest discover -s tests -p 'test_continual*.py' -v

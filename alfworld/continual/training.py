@@ -71,5 +71,8 @@ class NTPTrainer:
         return {"optimizer": self.optimizer.state_dict(), "steps": self.steps}
 
     def load_state_dict(self, state):
-        self.optimizer.load_state_dict(state["optimizer"])
+        # PyTorch may retain CPU tensor references from the supplied state.
+        # Loading must not let later steps mutate a reusable checkpoint snapshot.
+        import copy
+        self.optimizer.load_state_dict(copy.deepcopy(state["optimizer"]))
         self.steps = state["steps"]
