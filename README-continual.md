@@ -48,6 +48,7 @@ uv run --locked --extra continual python -m alfworld.continual \
 | `history-ntp` | 当前局完整历史 | 用本局完整文本执行一轮 LoRA NTP |
 | `history-ntp-assistant` | 当前局完整历史 | 所有 episode，仅训练 assistant reasoning/action |
 | `history-ntp-assistant-success` | 当前局完整历史 | 仅成功 episode，训练 assistant reasoning/action |
+| `ascent` | 当前局完整历史 | 仅成功 episode，冻结基座 teacher 提供 hindsight 分布，更新 LoRA |
 
 `window_episodes` 默认 4，**包含当前局**；K=1 的 ICL 与 memoryless 输入一致。
 所有历史保留 reasoning、action、观察、分数、格式反馈和终局反馈。
@@ -183,6 +184,64 @@ assistant-only mask**。不会把每步重复包含历史的推理 prompt 展开
 训练关闭 cache、开启 gradient checkpointing；结束后切回 eval 并清除旧推理 cache。
 当前局先记分，参数更新仅影响后续局。
 
+## ASCENT：成功经验的在线自蒸馏
+
+实现依据：[ASCENT 论文](https://arxiv.org/pdf/2610.05303) §3.3、Figure 6 和附录 B.3。
+这是当前 continual 交互协议下的核心算法复现，不是论文全部实验的逐项复现。
+保留本仓库的 `Reasoning:/Action:`、合法动作列表、greedy decoding、50 步预算和
+Qwen3.5-9B；没有引入论文的 action 标签协议或 unseen/WebShop/AppWorld 实验。
+
+使用独立配置（以下仅为运行命令示例）：
+
+```bash
+uv run --locked --extra continual python -m alfworld.continual \
+  --config configs/continual-ascent.yaml \
+  --manifest runs/memoryless-shuffled-admissible/manifest.json \
+  --output-dir runs/ascent-shuffled-admissible
+```
+
+不指定 manifest 时按配置生成任务流。与 `memoryless`、`history-ntp-assistant-success`
+比较时应使用相同任务顺序和交互配置。NTP 保留原训练超参数，因此该比较不能单独归因于 loss。
+`--method ascent` 也会采用独立 `ascent` 配置的默认值，不读取 `training` 下的 NTP 超参数。
+
+每个成功 episode 在记分后执行以下流程，失败局不改变参数、优化器或模型版本：
+
+1. 从初始环境观察提取 `Your task is to:` 后的目标，按 Figure 6 构造成功声明与编号后的
+   reasoning/action 记录。不加入 observation、分数或终局消息。解析失败和不在当时合法动作
+   列表中的轮次不进入此记录；合法但没有状态变化的动作仍然保留。
+2. 读取每步生成时的精确 input/output token IDs。student 使用原始前缀；teacher 在其前面
+   加成功记录的 token IDs，关闭 LoRA 并禁用梯度。成功记录独立编码后拼接，不重新编码
+   student 前缀，不调用模型生成新的监督答案。
+3. 在所有生成响应 token（含 EOS、格式错误及非法动作轮次）上计算全词表
+   `KL(teacher || student)`。先平均每轮 token，再平均轮次。system/user/模板和成功记录
+   本身不作为目标；超长推理已经截断的前缀也按当时实际 token 原样复用。
+4. 每个成功局执行两次完整 episode 梯度累积与 AdamW 更新，LoRA 和优化器状态跨局延续，
+   不回放历史 episode。日志保留轨迹用于审计，不作为 replay buffer。
+
+论文给出的参数为 `down_proj`、rank=16、scale=32、lr=1.5e-4、每局两次更新。
+这里把 scale 实现为 PEFT `lora_alpha=32`，采用默认 alpha/r 缩放。
+论文未明确的细节采用 dropout=0、weight decay=0、max grad norm=1、AdamW 默认 betas/eps、
+蒸馏温度=1，以及上述 EOS 处理方式。这些属于实现假设，不声称来自作者代码。
+
+teacher/student 共享基座权重；decoder 开启 gradient checkpointing，输出头和 KL 按
+`ascent.logits_chunk_tokens`（默认 32）个响应位置进行 checkpointed 分块计算。
+每块仍计算完整词表，不使用 top-k 或 2048-token 历史切块。该参数只控制输出头计算的显存，
+不能保证长前缀训练不 OOM。当前仅支持单卡训练。
+若 teacher 成功记录加完整前缀超过模型位置上限，更新前报错，不静默删减上下文或跳过该局。
+
+ASCENT 复用训练方法的 checkpoint 提交和恢复语义：每 10 局、最终局、按类别重置模式的
+类别末尾保存；恢复时回滚至已提交边界。`memory_scope: task_type` 是附加对照，论文式
+跨任务学习应使用默认 `stream`。
+`update.json` 保存 teacher 记录及 token IDs、保留/过滤轮次、每次更新的逐轮 KL、
+梯度范数、目标 token 数、耗时和版本；逐步日志与 `episode.json` 保留精确训练前缀。
+
+新增测试覆盖 KL 方向、teacher 冻结、token 对齐、无效轮次过滤、成功门控、分块等价性、
+LoRA 更新、恢复与 runner 集成。测试命令（实现提交时尚未执行）：
+
+```bash
+uv run --locked --extra continual python -m unittest discover -s tests -p 'test_continual*.py' -v
+```
+
 ## 日志、分析和恢复
 
 每个输出目录包含：
@@ -201,9 +260,9 @@ traces/<UTC启动时间戳>/
     steps.jsonl               # reset、每步交互和终局事件
     last_request.json         # 推理异常时也能看到最后一次尝试的输入
     last_generation.json      # 环境调用异常时也能看到最后一次模型输出
-    episode.json              # 不含重复推理前缀的完整本局对话
+    episode.json              # 本局对话；ASCENT 另保留逐步 token 前缀
     curator_request.json      # 仅 DC：总结调用前保存的输入和预算
-    update.json               # NTP 训练记录，或 DC 总结和 cheatsheet 更新记录
+    update.json               # NTP/ASCENT 训练记录，或 DC 总结更新记录
     error.json                # 仅异常尝试存在
 summary.json                # 已提交结果汇总
 episodes.csv                # 逐局指标和累计/滚动成功率
@@ -217,7 +276,7 @@ task_summary.csv            # 六类各自的局数、成功局数和成功率
 长 ReAct 历史会产生较大的日志，这是为还原实际模型输入保留的审计数据。
 
 模型 checkpoint 不保存在逐步 traces 中。`checkpoint_interval` 默认 **10**，也可通过
-`--checkpoint-interval 10` 指定，必须为正整数，适用于所有 NTP 方法：每完成 10 个 episode
+`--checkpoint-interval 10` 指定，必须为正整数，适用于 NTP 和 ASCENT：每完成 10 个 episode
 保存一次 LoRA 和优化器状态，结束时即使不足 10 局也保存。不会每个训练 step 保存模型。
 `memoryless`、`icl` 和 `dc-cumulative` 不保存模型 checkpoint，只在每局结束保存轻量恢复状态；
 ICL 包含历史对话，DC 包含累计 cheatsheet。

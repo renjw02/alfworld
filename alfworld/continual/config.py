@@ -5,7 +5,7 @@ import yaml
 
 
 NTP_METHODS = ("history-ntp", "history-ntp-assistant", "history-ntp-assistant-success")
-METHODS = ("memoryless", "icl", "dc-cumulative", *NTP_METHODS)
+METHODS = ("memoryless", "icl", "dc-cumulative", *NTP_METHODS, "ascent")
 
 
 @dataclass
@@ -44,6 +44,18 @@ class TrainingConfig:
 
 
 @dataclass
+class AscentConfig:
+    rank: int = 16
+    alpha: int = 32
+    dropout: float = 0.0
+    learning_rate: float = 1.5e-4
+    weight_decay: float = 0.0
+    max_grad_norm: float = 1.0
+    optimizer_steps: int = 2
+    logits_chunk_tokens: int = 32
+
+
+@dataclass
 class Config:
     method: str = "memoryless"
     action_mode: str = "admissible"
@@ -56,6 +68,11 @@ class Config:
     stream: StreamConfig = field(default_factory=StreamConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    ascent: AscentConfig = field(default_factory=AscentConfig)
+
+    @property
+    def trains_parameters(self):
+        return self.is_ntp or self.method == "ascent"
 
     @property
     def is_ntp(self):
@@ -85,7 +102,7 @@ class Config:
         if self.model.context_overflow not in ("truncate_oldest", "error"):
             raise ValueError("Unknown model.context_overflow policy")
         if self.model.devices:
-            if self.is_ntp:
+            if self.trains_parameters:
                 raise ValueError("Multi-GPU layer sharding is supported for inference methods only")
             if (len(self.model.devices) < 2 or len(set(self.model.devices)) != len(self.model.devices)
                     or any(not isinstance(d, str) or not d.startswith("cuda:")
@@ -119,6 +136,20 @@ class Config:
             raise ValueError("learning_rate and max_grad_norm must be positive")
         if self.training.weight_decay < 0:
             raise ValueError("weight_decay must be nonnegative")
+        if self.method == "ascent":
+            a = self.ascent
+            for name in ("rank", "alpha", "optimizer_steps", "logits_chunk_tokens"):
+                value = getattr(a, name)
+                if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                    raise ValueError(f"ascent.{name} must be a positive integer")
+            import math
+            for name in ("learning_rate", "max_grad_norm", "weight_decay", "dropout"):
+                if not math.isfinite(getattr(a, name)):
+                    raise ValueError(f"ascent.{name} must be finite")
+            if a.learning_rate <= 0 or a.max_grad_norm <= 0 or a.weight_decay < 0:
+                raise ValueError("Invalid ASCENT optimizer configuration")
+            if a.dropout != 0:
+                raise ValueError("ASCENT requires dropout=0 for deterministic teacher/student matching")
         return self
 
     def to_dict(self):
@@ -127,6 +158,6 @@ class Config:
 
 def load_config(path):
     values = yaml.safe_load(Path(path).read_text()) or {}
-    for name, cls in (("stream", StreamConfig), ("model", ModelConfig), ("training", TrainingConfig)):
+    for name, cls in (("stream", StreamConfig), ("model", ModelConfig), ("training", TrainingConfig), ("ascent", AscentConfig)):
         values[name] = cls(**values.get(name, {}))
     return Config(**values)

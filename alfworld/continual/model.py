@@ -5,6 +5,7 @@ from pathlib import Path
 import time
 from .types import Generation
 from .training import NTPTrainer
+from .ascent import AscentTrainer, success_record
 from .context import fit_context
 
 
@@ -63,17 +64,20 @@ class HFBackend:
         self.trainer = None
         self.target_modules = []
         self.model.requires_grad_(False)
-        if config.is_ntp:
+        if config.trains_parameters:
+            training = config.ascent if config.method == "ascent" else config.training
             from peft import LoraConfig, get_peft_model
             self.model = get_peft_model(model, LoraConfig(
-                task_type="CAUSAL_LM", r=config.training.rank,
-                lora_alpha=config.training.alpha, lora_dropout=config.training.dropout,
-                target_modules="all-linear", exclude_modules=["lm_head"], bias="none",
+                task_type="CAUSAL_LM", r=training.rank,
+                lora_alpha=training.alpha, lora_dropout=training.dropout,
+                target_modules=["down_proj"] if config.method == "ascent" else "all-linear",
+                exclude_modules=["lm_head"], bias="none",
             ))
             self.target_modules = [name for name, module in self.model.named_modules() if hasattr(module, "lora_A")]
             if not self.target_modules:
                 raise RuntimeError("LoRA matched no modules")
-            self.trainer = NTPTrainer(self.model, config.training)
+            self.trainer = (AscentTrainer(self.model, training) if config.method == "ascent"
+                            else NTPTrainer(self.model, training))
         self.model.eval()
         self.model.config.use_cache = True
 
@@ -157,6 +161,19 @@ class HFBackend:
                       loss_scope="assistant" if self.config.assistant_only else "full")
         return result
 
+    def distill_episode(self, episode):
+        if self.config.method != "ascent" or not episode.outcome.get("success"):
+            raise ValueError("ASCENT distillation requires a verified successful episode")
+        text, kept, removed = success_record(episode)
+        privileged_ids = self.tokenizer.encode(text, add_special_tokens=False)
+        architecture = getattr(self.model.config, "text_config", self.model.config)
+        result = self.trainer.train(episode.steps, privileged_ids, architecture.max_position_embeddings)
+        result.update(kind="ascent", teacher_record=text, teacher_token_ids=privileged_ids,
+                      retained_turns=kept, filtered_turns=removed,
+                      loss_scope="all_generated_response_tokens_including_eos",
+                      loss_reduction="mean_of_turn_token_means")
+        return result
+
     def state_dict(self):
         if self.trainer is None:
             return {}
@@ -218,6 +235,13 @@ class MockBackend:
     def train_episode(self, messages):
         self.updates += 1
         return {"mock": True, "optimizer_steps": 0, "training_text": json.dumps(messages), "loss": None}
+
+    def distill_episode(self, episode):
+        text, kept, removed = success_record(episode)
+        self.updates += 1
+        return {"kind": "ascent", "mock": True, "optimizer_steps": 0, "loss": None,
+                "teacher_record": text, "retained_turns": kept, "filtered_turns": removed,
+                "seconds": 0.0, "skipped": False}
 
     def state_dict(self):
         return {"updates": self.updates}

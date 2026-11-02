@@ -1,11 +1,11 @@
 # Every method starts from the same base model in its own output directory.
-method: memoryless                 # memoryless | icl | dc-cumulative | history-ntp | history-ntp-assistant | history-ntp-assistant-success
+method: memoryless                 # memoryless | icl | dc-cumulative | history-ntp | history-ntp-assistant | history-ntp-assistant-success | ascent (see continual-ascent.yaml)
 action_mode: admissible            # provide the current environment's exact valid commands
 window_episodes: 4                 # includes the current episode
 max_steps: 50                      # counts malformed generations too
 output_dir: runs/experiment
 cheatsheet_max_new_tokens: 2048    # DC-Cumulative: one curator call after each episode
-checkpoint_interval: 10            # all NTP methods; also save at completion
+checkpoint_interval: 10            # all parameter-training methods; also save at completion
 memory_scope: stream               # task_type resets history/cheatsheet/LoRA between categories
 stream:
   order: shuffled                 # shuffled | task_blocked

@@ -66,6 +66,26 @@ class ProtocolTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_ascent_runner_tokens_checkpoint_and_resume(self):
+        self.config.method = "ascent"
+        self.config.checkpoint_interval = 1
+        result = run(self.config, backend_factory=MockBackend, env_factory=FakeEnv)
+        self.assertEqual(result["episodes"], 2)
+        state, completed = load_checkpoint(Path(self.config.output_dir))
+        self.assertEqual(state["backend"]["updates"], 2)
+        self.assertEqual(state["method"]["version"], 2)
+        for row in completed:
+            folder = Path(self.config.output_dir) / row["attempt_dir"]
+            ep = json.loads((folder / "episode.json").read_text())
+            update = json.loads((folder / "update.json").read_text())
+            self.assertTrue(ep["steps"][0]["input_token_ids"])
+            self.assertTrue(ep["steps"][0]["output_token_ids"])
+            self.assertTrue(update["mock"])
+            self.assertEqual(update["kind"], "ascent")
+        run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
+        resumed, _ = load_checkpoint(Path(self.config.output_dir))
+        self.assertEqual(resumed["backend"], state["backend"])
+
     def test_default_config(self):
         config = load_config("configs/continual.yaml").validate()
         self.assertEqual(config.model.max_new_tokens, 1024)

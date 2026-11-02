@@ -131,9 +131,10 @@ def run_episode(config, entry, position, method, log, env_factory=TextEnvironmen
                           score=score, environment_done=bool(done), success=success,
                           episode_done=bool(done or success or step == config.max_steps))
             log.append(record)
-            # Exact prompts live on disk; only compact records are retained in memory.
+            # ASCENT reuses exact rollout tokens; other methods retain compact records.
             episode.steps.append({k: v for k, v in record.items() if k not in
-                                  ("messages", "prompt", "input_token_ids", "output_token_ids")})
+                                  (("messages", "prompt") if config.method == "ascent" else
+                                   ("messages", "prompt", "input_token_ids", "output_token_ids"))})
             if done or success:
                 break
         episode.outcome = {"success": success, "end_reason": end_reason, "score": score,
@@ -162,8 +163,11 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             saved_config["model"].setdefault("devices", [])
             saved_config["model"].setdefault("gpu_memory_gib", [])
             saved_config["model"].setdefault("context_overflow", "error")
+            from dataclasses import asdict
+            from .config import AscentConfig
+            saved_config.setdefault("ascent", asdict(AscentConfig()))
             current_config = config.to_dict()
-            if not config.is_ntp:
+            if not config.trains_parameters:
                 # Placement changes are recorded per invocation, not experiment semantics.
                 for key in ("device", "devices", "gpu_memory_gib"):
                     saved_config["model"][key] = current_config["model"][key]
@@ -258,7 +262,7 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
                                    curator_generation_seconds=update["generation_seconds"],
                                    cheatsheet_update_accepted=update["accepted"])
                 completed.append(summary)
-                training = config.is_ntp
+                training = config.trains_parameters
                 task_end = (index + 1 == len(entries)
                             or entries[index + 1]["task_type"] != entries[index]["task_type"])
                 save_model = training and ((index + 1) % config.checkpoint_interval == 0

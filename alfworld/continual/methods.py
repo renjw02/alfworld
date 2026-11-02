@@ -15,7 +15,7 @@ class Method:
         self.current_task = None
         # Capture the original adapter/optimizer before a resume loads adapted state.
         self.initial_backend = (copy.deepcopy(backend.state_dict())
-                                if config.memory_scope == "task_type" and config.is_ntp else None)
+                                if config.memory_scope == "task_type" and config.trains_parameters else None)
 
     def begin_task(self, task_type):
         reset = (self.config.memory_scope == "task_type" and self.current_task is not None
@@ -62,6 +62,17 @@ class Method:
                     "input_tokens": len(generation.input_ids), "output_tokens": len(generation.output_ids),
                     "generation_seconds": generation.seconds, "generation_truncated": generation.truncated,
                     "optimizer_steps": 0}
+        elif self.config.method == "ascent":
+            if not episode.outcome["success"]:
+                return {"kind": "ascent", "skipped": True, "skip_reason": "unsuccessful_episode",
+                        "optimizer_steps": 0, "seconds": 0.0, "loss": None,
+                        "version_before": self.version, "version_after": self.version}
+            result = self.backend.distill_episode(episode)
+            result["version_before"] = self.version
+            if not result.get("skipped", False):
+                self.version += 1
+            result["version_after"] = self.version
+            return result
         elif self.config.is_ntp:
             if (self.config.method == "history-ntp-assistant-success"
                     and not episode.outcome["success"]):
