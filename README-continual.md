@@ -35,6 +35,12 @@ uv run --locked --extra continual python -m alfworld.continual \
 
 `continual` extra 独立于 `full/vis`，不需要 AI2-THOR、视觉检测器或训练 BUTLER。
 基础 `uv sync --locked` 仍然只安装原来的文本环境依赖。
+Linux x86_64、Python 3.11+ 的 Torch/TorchVision 使用官方 CUDA 12.8 wheel 源，
+以兼容本机 570 系列驱动；直接使用 PyPI 的 CUDA 13.x wheel 会导致 CUDA 初始化失败。
+该源仅用于这两个包，其他依赖继续使用 PyPI，具体版本由 `uv.lock` 固定。
+安装后可运行 `uv run --locked --extra continual python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"`
+检查，最后一项应为 `True`。运行前还须准备 `model.path` 指定的本地模型权重，
+并选择空闲显存满足要求的 GPU；安装依赖不会自动下载模型。
 底层 Qwen3.5 线性注意力在没有可选优化 kernel 时使用正确但较慢的 PyTorch 实现。
 当前实现优先验证实验语义，没有自动安装 `flash-linear-attention` 或 `causal-conv1d`。
 
