@@ -3,6 +3,7 @@ import re
 from .types import ParsedAction
 
 SYSTEM = """You are an agent playing an ALFWorld household text game. Complete the task by interacting with the environment. Use observations and your previous interactions to reason about the next action. Previous episodes, if present, are experience, not the current world state.
+If an action returns "Nothing happens." or similar no-change feedback, reconsider the latest observation and try a different action instead of repeating the same action in the same state. Avoid repeating an unproductive action sequence; retry a failed action only after relevant conditions have changed.
 Every response MUST have exactly this format:
 Reasoning: <briefly explain your reasoning about the current state and next action>
 Action: <exactly one environment command on one line>
