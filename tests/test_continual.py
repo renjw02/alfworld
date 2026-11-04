@@ -103,6 +103,18 @@ class ProtocolTests(unittest.TestCase):
         resumed, _ = load_checkpoint(root)
         self.assertEqual(resumed["backend"], state["backend"])
 
+        # Legacy SFT config has no batching fields: only explicit 1x1 may resume.
+        path = root / "config.json"
+        saved = json.loads(path.read_text())
+        saved["sft"].pop("batch_size")
+        saved["sft"].pop("gradient_accumulation_steps")
+        path.write_text(json.dumps(saved))
+        with self.assertRaisesRegex(ValueError, "configuration differs"):
+            run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
+        self.config.sft.batch_size = 1
+        self.config.sft.gradient_accumulation_steps = 1
+        run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
+
     def test_default_config(self):
         config = load_config("configs/continual.yaml").validate()
         self.assertEqual(config.model.max_new_tokens, 1024)

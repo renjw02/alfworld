@@ -17,6 +17,8 @@ model:
   max_new_tokens: 1024
   backend: hf
 sft:
+  batch_size: 2
+  gradient_accumulation_steps: 4  # effective batch = 8; flush remainder per episode
   history_interactions: 5
   # Pilot: 2048 excludes 28.5%; 4096 excludes 0.26% of eligible examples.
   # Whole oversize samples are skipped, never sliced or stripped of history.

@@ -20,7 +20,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--runs', nargs='+', required=True)
     parser.add_argument('--output', required=True)
-    parser.add_argument('--train-steps', type=int, default=0)
+    parser.add_argument('--train-samples', '--train-steps', dest='train_samples', type=int, default=0,
+                        help='Number of interaction samples (legacy alias: --train-steps)')
+    parser.add_argument('--batch-size', type=int, default=2)
+    parser.add_argument('--gradient-accumulation-steps', type=int, default=4)
     parser.add_argument('--max-seq-tokens', type=int, default=2048)
     parser.add_argument('--device', default='cuda:0')
     parser.add_argument('--memory-gib', type=float, default=30)
@@ -28,6 +31,9 @@ def main():
     from transformers import AutoTokenizer
     config = Config(method='success-only-sft')
     config.model.device = args.device
+    config.sft.batch_size = args.batch_size
+    config.sft.gradient_accumulation_steps = args.gradient_accumulation_steps
+    config.validate()
     config.sft.max_seq_tokens = args.max_seq_tokens
     tokenizer = AutoTokenizer.from_pretrained(config.model.path, local_files_only=True)
     renderer = HFBackend.__new__(HFBackend)
@@ -71,9 +77,9 @@ def main():
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, indent=2)+'\n')
     print(json.dumps(report, indent=2), flush=True)
-    if args.train_steps:
+    if args.train_samples:
         import torch
-        if len(pool) < args.train_steps:
+        if len(pool) < args.train_samples:
             raise RuntimeError('Not enough samples fit the requested budget')
         torch.manual_seed(42)
         torch.cuda.set_device(args.device)
@@ -85,7 +91,7 @@ def main():
         config.sft.max_seq_tokens = args.max_seq_tokens
         backend = HFBackend(config)
         # Include the longest fitting examples, rather than only easy first turns.
-        chosen = sorted(pool, key=lambda item: len(item[0]['input_ids']), reverse=True)[:args.train_steps]
+        chosen = sorted(pool, key=lambda item: len(item[0]['input_ids']), reverse=True)[:args.train_samples]
         before = {n: p.detach().cpu().clone() for n,p in backend.model.named_parameters() if p.requires_grad}
         result = backend.trainer.train_samples([s for s,_ in chosen])
         changed = [n for n,p in backend.model.named_parameters() if p.requires_grad and not torch.equal(before[n], p.detach().cpu())]

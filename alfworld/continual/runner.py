@@ -167,6 +167,11 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             from .config import AscentConfig, SFTConfig
             saved_config.setdefault("ascent", asdict(AscentConfig()))
             saved_config.setdefault("sft", asdict(SFTConfig()))
+            # Pre-batching SFT runs used one update per sample. Do not silently
+            # resume them with the new effective batch size.
+            old_sft = saved_config.get("method") == "success-only-sft"
+            saved_config["sft"].setdefault("batch_size", 1 if old_sft else SFTConfig().batch_size)
+            saved_config["sft"].setdefault("gradient_accumulation_steps", 1 if old_sft else SFTConfig().gradient_accumulation_steps)
             current_config = config.to_dict()
             if not config.trains_parameters:
                 # Placement changes are recorded per invocation, not experiment semantics.

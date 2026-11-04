@@ -59,6 +59,8 @@ class AscentConfig:
 class SFTConfig:
     max_seq_tokens: int = 2048
     history_interactions: int = 5
+    batch_size: int = 2
+    gradient_accumulation_steps: int = 4
 
 
 @dataclass
@@ -143,7 +145,8 @@ class Config:
             raise ValueError("learning_rate and max_grad_norm must be positive")
         if self.training.weight_decay < 0:
             raise ValueError("weight_decay must be nonnegative")
-        for name, minimum in (("max_seq_tokens", 2), ("history_interactions", 0)):
+        for name, minimum in (("max_seq_tokens", 2), ("history_interactions", 0),
+                              ("batch_size", 1), ("gradient_accumulation_steps", 1)):
             value = getattr(self.sft, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
                 raise ValueError(f"sft.{name} must be an integer >= {minimum}")

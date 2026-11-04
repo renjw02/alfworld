@@ -115,7 +115,29 @@ after examining the pilot instead of silently training on incomplete context.
 
 
 class SFTTrainer(NTPTrainer):
-    """One optimizer step per complete interaction; never invoke token_chunks."""
+    """Mini-batches accumulated into sample-weighted optimizer updates."""
+
+    def __init__(self, model, config, sft_config=None, pad_token_id=0):
+        super().__init__(model, config)
+        from .config import SFTConfig
+        self.sft_config = sft_config or SFTConfig()
+        self.pad_token_id = pad_token_id
+
+    def collate(self, samples, device):
+        import torch
+        length = max(len(s["input_ids"]) - 1 for s in samples)
+        targets_length = max(len(s["input_ids"]) - s["prompt_tokens"] for s in samples)
+        inputs = torch.full((len(samples), length), self.pad_token_id, dtype=torch.long, device=device)
+        mask = torch.zeros_like(inputs)
+        targets = torch.full((len(samples), targets_length), -100, dtype=torch.long, device=device)
+        for row, sample in enumerate(samples):
+            ids = sample["input_ids"][:-1]  # causal shift, EOS remains a target
+            response = sample["labels"][sample["prompt_tokens"]:]
+            inputs[row, -len(ids):] = torch.tensor(ids, device=device)
+            mask[row, -len(ids):] = 1
+            targets[row, -len(response):] = torch.tensor(response, device=device)
+        positions = (mask.cumsum(-1) - 1).clamp_min(0)
+        return inputs, mask, positions, targets
 
     def train_samples(self, samples):
         import torch
@@ -135,27 +157,43 @@ class SFTTrainer(NTPTrainer):
             self.model.config.use_cache = False
             device = next(self.model.parameters()).device
             try:
-                for sample in samples:
+                batch_size = self.sft_config.batch_size
+                effective_batch = batch_size * self.sft_config.gradient_accumulation_steps
+                for start in range(0, len(samples), effective_batch):
+                    window = samples[start:start + effective_batch]
                     self.optimizer.zero_grad(set_to_none=True)
-                    # Standard causal shift: prompt + response[:-1] predicts the
-                    # full response, including EOS. All context reaches the decoder;
-                    # omit only the unused prompt vocabulary projections (Qwen3.5).
-                    inputs = torch.tensor([sample["input_ids"][:-1]], device=device)
-                    targets = torch.tensor(sample["labels"][sample["prompt_tokens"]:], device=device)
-                    result = self.model(input_ids=inputs, attention_mask=torch.ones_like(inputs),
-                                        logits_to_keep=len(targets), use_cache=False)
-                    loss = torch.nn.functional.cross_entropy(result.logits[0].float(), targets)
-                    if not torch.isfinite(loss):
-                        raise RuntimeError("Non-finite SFT loss; episode update not committed")
-                    loss.backward()
+                    window_loss = 0.0
+                    micro_batches = 0
+                    for offset in range(0, len(window), batch_size):
+                        batch = window[offset:offset + batch_size]
+                        inputs, mask, positions, targets = self.collate(batch, device)
+                        # Left padding aligns response ends. Only response positions
+                        # get vocabulary logits; shorter responses mask extra positions.
+                        result = self.model(input_ids=inputs, attention_mask=mask,
+                                            position_ids=positions, logits_to_keep=targets.shape[1],
+                                            use_cache=False)
+                        token_losses = torch.nn.functional.cross_entropy(
+                            result.logits.float().transpose(1, 2), targets,
+                            ignore_index=-100, reduction="none")
+                        response_losses = token_losses.sum(-1) / (targets != -100).sum(-1)
+                        # Actual sample count handles both a short micro-batch and
+                        # the final partial accumulation window without underweighting.
+                        loss = response_losses.sum() / len(window)
+                        if not torch.isfinite(loss):
+                            raise RuntimeError("Non-finite SFT loss; episode update not committed")
+                        loss.backward()
+                        window_loss += loss.item()
+                        micro_batches += 1
+                        del loss, response_losses, token_losses, result, inputs, mask, positions, targets
                     norm = torch.nn.utils.clip_grad_norm_(self.parameters, self.config.max_grad_norm,
                                                           error_if_nonfinite=True)
                     self.optimizer.step()
                     self.steps += 1
-                    records.append({"step": sample["step"], "loss": loss.item(),
-                                    "gradient_norm": norm.item(), "tokens": len(sample["input_ids"]),
-                                    "target_tokens": sample["target_tokens"], "optimizer_step": self.steps})
-                    del loss, result, inputs, targets
+                    records.append({"sample_steps": [s["step"] for s in window], "loss": window_loss,
+                                    "samples": len(window), "micro_batches": micro_batches,
+                                    "gradient_norm": norm.item(), "tokens": sum(len(s["input_ids"]) for s in window),
+                                    "target_tokens": sum(s["target_tokens"] for s in window),
+                                    "optimizer_step": self.steps})
             finally:
                 self.optimizer.zero_grad(set_to_none=True)
                 self.model.gradient_checkpointing_disable()
@@ -163,8 +201,11 @@ class SFTTrainer(NTPTrainer):
                 self.model.config.use_cache = True
                 self.model.eval()
         return {"skipped": not bool(records), "optimizer_steps": len(records),
-                "total_optimizer_steps": self.steps, "samples_trained": len(records),
+                "total_optimizer_steps": self.steps, "samples_trained": sum(r["samples"] for r in records),
+                "batch_size": self.sft_config.batch_size,
+                "gradient_accumulation_steps": self.sft_config.gradient_accumulation_steps,
+                "micro_batches": sum(r["micro_batches"] for r in records),
                 "target_tokens": sum(r["target_tokens"] for r in records),
-                "loss": sum(r["loss"] for r in records) / len(records) if records else None,
+                "loss": sum(r["loss"] * r["samples"] for r in records) / len(samples) if records else None,
                 "loss_reduction": "mean_per_response", "records": records,
                 "seconds": time.perf_counter() - started}

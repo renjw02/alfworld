@@ -350,8 +350,12 @@ NTP 更新也是模拟的。真正的参数更新由小型 Qwen3.5 测试验证�
 都 mask 为 `-100`。构造回答前缀直接使用与推理相同的 generation template；新方法推理时也
 使用同样的 5 次交互窗口，不向模型提供当前交互的未来反馈或整局成功结果。
 
-不再按 `training.chunk_tokens` 切块。每条完整样本做一次 optimizer step，沿用 `training`
-中的 LoRA 和 AdamW 参数。`sft.max_seq_tokens` 限制 prompt + 当前回答 + EOS 的总长：
+不再按 `training.chunk_tokens` 切块。使用 mini-batch 和梯度累积，沿用 `training` 中的 LoRA 和 AdamW 参数。
+默认 `sft.batch_size: 2`、`sft.gradient_accumulation_steps: 4`，有效 batch 为 8 条交互样本。
+每个成功 episode 的更新次数为 `ceil(有效样本数 / 8)`；最后不足 8 条也更新一次，
+按实际样本数归一化，各回答内部按目标 token 取均值。Padding、历史和观察不参与 loss，
+梯度裁剪与 optimizer.step 只在累积窗口结束时执行，不跨 episode 保留梯度。
+`update.json` 分别记录样本数、micro-batch 数和 optimizer steps。`sft.max_seq_tokens` 限制 prompt + 当前回答 + EOS 的总长：
 超限整条跳过并记录长度，不截断 action/EOS，也不删除要求的历史。
 原始默认值为 2048；对历史 207 个成功局的 2653 个有效交互进行长度检查后，2048 会排除
 755 条（28.5%），4096 只排除 7 条（0.26%），所以方法配置使用 4096。
@@ -372,8 +376,12 @@ uv run --locked --extra continual python -m alfworld.continual \
 .venv/bin/python scripts/pilot_success_only_sft.py \
   --runs runs/continual-matrix-20261101T135608Z/history-ntp-assistant-success-stream-1 \
   --output runs/sft-pilot/check.json --max-seq-tokens 4096 \
-  --train-steps 3 --device cuda:0 --memory-gib 30
+  --train-samples 9 --batch-size 2 --gradient-accumulation-steps 4 \
+  --device cuda:0 --memory-gib 30
 ```
 
-不传 `--train-steps` 时只加载本地 tokenizer 并统计长度，不加载模型。试跑结果仅验证样本构造
+不传 `--train-samples` 时只加载本地 tokenizer 并统计长度，不加载模型。试跑结果仅验证样本构造
 和训练可执行性，不是新方法的 ALFWorld 成功率评测。
+
+旧版每条样本更新一次的 SFT 运行若要继续恢复，需显式设 `batch_size: 1` 和
+`gradient_accumulation_steps: 1`；直接改成新默认值会触发 resume 配置不一致保护。

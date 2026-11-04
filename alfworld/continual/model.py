@@ -78,7 +78,9 @@ class HFBackend:
             if not self.target_modules:
                 raise RuntimeError("LoRA matched no modules")
             self.trainer = (AscentTrainer(self.model, training) if config.method == "ascent"
-                            else SFTTrainer(self.model, training) if config.method == "success-only-sft"
+                            else SFTTrainer(self.model, training, config.sft,
+                                            self.tokenizer.pad_token_id or self.tokenizer.eos_token_id)
+                            if config.method == "success-only-sft"
                             else NTPTrainer(self.model, training))
         self.model.eval()
         self.model.config.use_cache = True

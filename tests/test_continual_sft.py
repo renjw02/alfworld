@@ -112,6 +112,13 @@ class SFTProtocolTests(unittest.TestCase):
         self.assertEqual(backend.updates,0)
         self.assertEqual(method.version,0)
 
+    def test_batch_config_invalid_bounds(self):
+        for field in ('batch_size', 'gradient_accumulation_steps'):
+            for value in (0, -1, True, 1.5):
+                config = Config(method='success-only-sft')
+                setattr(config.sft, field, value)
+                with self.assertRaises(ValueError): config.validate()
+
     def test_config_invalid_bounds(self):
         self.assertTrue(self.config.validate().trains_parameters)
         self.assertFalse(self.config.is_ntp)
@@ -121,11 +128,70 @@ class SFTProtocolTests(unittest.TestCase):
 
 
 class SFTModelTests(unittest.TestCase):
+    def test_minibatch_accumulation_matches_unpadded_reference(self):
+        import torch
+        from transformers import Qwen3_5TextConfig, Qwen3_5ForCausalLM
+        from alfworld.continual.sft import SFTTrainer
+        torch.set_num_threads(2); torch.manual_seed(17)
+        config = Config(method='success-only-sft')
+        config.model.device = 'cpu'; config.training.learning_rate = 1e-3
+        config.sft.batch_size = 2; config.sft.gradient_accumulation_steps = 2
+        arch = Qwen3_5TextConfig(vocab_size=64, hidden_size=32, intermediate_size=64, num_hidden_layers=2,
+            num_attention_heads=4, num_key_value_heads=2, head_dim=8, linear_key_head_dim=8, linear_value_head_dim=8,
+            linear_num_key_heads=2, linear_num_value_heads=4, layer_types=['linear_attention','full_attention'],
+            max_position_embeddings=4096, eos_token_id=2, pad_token_id=0,
+            rope_parameters={'rope_type':'default','rope_theta':10000.,'partial_rotary_factor':1.,'mrope_section':[1,1,2]})
+        backend = HFBackend(config, model=Qwen3_5ForCausalLM(arch), tokenizer=Tokenizer())
+        reference = SFTTrainer(copy.deepcopy(backend.model), config.training, config.sft)
+        full_config = copy.deepcopy(config.sft); full_config.batch_size=4; full_config.gradient_accumulation_steps=1
+        full = SFTTrainer(copy.deepcopy(backend.model), config.training, full_config)
+        samples = []
+        for i in range(7):
+            prefix = 3+i; response = 2+i%3
+            ids = torch.randint(3,64,(prefix+response,)).tolist()+[2]
+            samples.append(dict(step=i+1,input_ids=ids,labels=[-100]*prefix+ids[prefix:],
+                                prompt_tokens=prefix,target_tokens=response+1))
+        inputs, mask, positions, labels = backend.trainer.collate(samples[:2], 'cpu')
+        self.assertTrue((mask==0).any())
+        for i,sample in enumerate(samples[:2]):
+            self.assertEqual(inputs[i][mask[i].bool()].tolist(),sample['input_ids'][:-1])
+            self.assertEqual(positions[i][mask[i].bool()].tolist(),list(range(len(sample['input_ids'])-1)))
+            self.assertEqual(labels[i][labels[i]!=-100].tolist(),sample['labels'][sample['prompt_tokens']:])
+        # Independent full-vocabulary, unpadded, one-example forwards; same actual
+        # sample normalization in windows of four, then a partial window of three.
+        reference_losses=[]
+        for start in (0,4):
+            window=samples[start:start+4]; reference.optimizer.zero_grad(set_to_none=True)
+            losses=[]
+            for sample in window:
+                logits=reference.model(input_ids=torch.tensor([sample['input_ids']]),use_cache=False).logits
+                loss=torch.nn.functional.cross_entropy(logits[0,sample['prompt_tokens']-1:-1].float(),
+                    torch.tensor(sample['input_ids'][sample['prompt_tokens']:]))
+                (loss/len(window)).backward();losses.append(loss.item())
+            torch.nn.utils.clip_grad_norm_(reference.parameters,config.training.max_grad_norm)
+            reference.optimizer.step();reference_losses.append(sum(losses)/len(losses))
+        result=backend.trainer.train_samples(samples)
+        other=full.train_samples(samples)
+        self.assertEqual(result['optimizer_steps'],2)
+        self.assertEqual(result['micro_batches'],4)
+        self.assertEqual(result['samples_trained'],7)
+        self.assertEqual([r['samples'] for r in result['records']],[4,3])
+        for record, expected in zip(result['records'],reference_losses):
+            self.assertAlmostEqual(record['loss'],expected,places=5)
+        for actual, expected, full_batch in zip(backend.trainer.parameters, reference.parameters, full.parameters):
+            torch.testing.assert_close(actual,expected,atol=2e-6,rtol=2e-4)
+            torch.testing.assert_close(actual,full_batch,atol=2e-6,rtol=2e-4)
+        self.assertEqual(other['optimizer_steps'],2)
+        # No samples means no optimizer update or pending gradient carried to another episode.
+        self.assertEqual(backend.trainer.train_samples([])['optimizer_steps'],0)
+        self.assertTrue(all(p.grad is None for p in backend.trainer.parameters))
+
     def test_real_loss_lora_resume_and_task_reset(self):
         import torch
         from transformers import Qwen3_5TextConfig,Qwen3_5ForCausalLM
         torch.set_num_threads(2);torch.manual_seed(42)
         config=Config(method='success-only-sft');config.model.device='cpu'
+        config.sft.batch_size=1;config.sft.gradient_accumulation_steps=1
         config.training.chunk_tokens=2  # Must have no effect on SFT sample construction/training.
         config.training.learning_rate=1e-3;config.sft.max_seq_tokens=8192
         config.memory_scope='task_type';config.stream.order='task_blocked'
