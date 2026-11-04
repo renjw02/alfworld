@@ -133,7 +133,7 @@ def run_episode(config, entry, position, method, log, env_factory=TextEnvironmen
             log.append(record)
             # ASCENT reuses exact rollout tokens; other methods retain compact records.
             episode.steps.append({k: v for k, v in record.items() if k not in
-                                  (("messages", "prompt") if config.method == "ascent" else
+                                  (("messages", "prompt") if config.is_ascent else
                                    ("messages", "prompt", "input_token_ids", "output_token_ids"))})
             if done or success:
                 break

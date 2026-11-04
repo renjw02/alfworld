@@ -55,6 +55,7 @@ Linux x86_64、Python 3.11+ 的 Torch/TorchVision 使用官方 CUDA 12.8 wheel �
 | `history-ntp-assistant` | 当前局完整历史 | 所有 episode，仅训练 assistant reasoning/action |
 | `history-ntp-assistant-success` | 当前局完整历史 | 仅成功 episode，训练 assistant reasoning/action |
 | `ascent` | 当前局完整历史 | 仅成功 episode，冻结基座 teacher 提供 hindsight 分布，更新 LoRA |
+| `ascent-icl` | 最近 K−1 局 + 当前局完整历史 | 仅成功 episode 执行 ASCENT 更新；成功和失败局都保留到上下文窗口 |
 
 `window_episodes` 默认 4，**包含当前局**；K=1 的 ICL 与 memoryless 输入一致。
 所有历史保留 reasoning、action、观察、分数、格式反馈和终局反馈。
@@ -252,6 +253,27 @@ LoRA 更新、恢复与 runner 集成。2026-11-02 执行以下套件，23 项�
 ```bash
 uv run --locked --extra continual python -m unittest discover -s tests -p 'test_continual*.py' -v
 ```
+
+## ASCENT + ICL
+
+`ascent-icl` 在 ASCENT 参数更新之外，保留最近 `window_episodes - 1` 局的原始对话。
+默认窗口为 4（最近 3 局加当前局），成功和失败局都进入窗口；只有成功局更新 LoRA。
+使用 `memory_scope: stream` 时，LoRA、优化器和上下文窗口都跨任务 block 延续。
+窗口仍受输入 token 预算约束，沿用 `truncate_oldest` 规则。
+
+蒸馏使用当前局 rollout 当时保存的精确前缀，其中包含实际送入模型的 ICL 历史；
+loss 仅覆盖当前局生成的响应 token。历史 episode 是条件上下文，不重新作为训练目标回放。
+teacher 仍为关闭 LoRA 的冻结基座，并额外接收当前成功局的成功记录。
+checkpoint 同时保存历史窗口、LoRA 和优化器，恢复时一并回到已提交边界。
+
+```bash
+uv run --locked --extra continual python -m alfworld.continual \
+  --config configs/continual-ascent-icl.yaml \
+  --seed 42 --stream-order task_blocked --memory-scope stream \
+  --output-dir runs/ascent-icl-task-blocked-admissible
+```
+
+该组合仍只支持单卡训练，默认学习率、LoRA 设置、每个成功局的两次更新与 ASCENT 相同。
 
 ## 日志、分析和恢复
 

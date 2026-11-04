@@ -96,6 +96,56 @@ class ProtocolTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "checkpoint_interval"):
                 config.validate()
 
+    def test_ascent_icl_checkpoint_replays_history_and_updates_together(self):
+        self.config.method = "ascent-icl"
+        self.config.stream.order = "task_blocked"
+        self.config.stream.limit = 4
+        self.config.window_episodes = 3
+        self.config.checkpoint_interval = 2
+        seen = []
+        distilled = []
+        class Backend(MockBackend):
+            def generate(self, messages, **kwargs):
+                seen.append((self.updates, copy.deepcopy(messages)))
+                return super().generate(messages, **kwargs)
+            def distill_episode(self, episode):
+                # Retain the exact rollout prefix, including ICL history, for ASCENT.
+                prefix = json.loads(bytes(episode.steps[0]["input_token_ids"]).decode())
+                self_prefix = seen[-1][1]
+                if prefix != self_prefix:
+                    raise AssertionError("Distillation lost rollout context")
+                distilled.append(copy.deepcopy(prefix))
+                return super().distill_episode(episode)
+        class FailingBackend(Backend):
+            def generate(self, messages, **kwargs):
+                if self.updates == 3:
+                    raise RuntimeError("interrupt after uncommitted update")
+                return super().generate(messages, **kwargs)
+        with self.assertRaisesRegex(RuntimeError, "uncommitted update"):
+            run(self.config, backend_factory=FailingBackend, env_factory=FakeEnv)
+        root = Path(self.config.output_dir)
+        state, rows = load_checkpoint(root)
+        self.assertEqual((state["next_position"], state["backend"]["updates"], len(rows)), (2, 2, 2))
+        self.assertEqual(len(state["method"]["history"]), 2)
+        interrupted_prefix = distilled[-1]
+        seen.clear()
+        run(self.config, resume=True, backend_factory=Backend, env_factory=FakeEnv)
+        self.assertEqual(seen[0], (2, interrupted_prefix))
+        self.assertEqual([sum(m["content"].startswith("BEGIN EPISODE") for m in messages)
+                          for _, messages in seen], [3, 3])
+        resumed, rows = load_checkpoint(root)
+        self.assertEqual(resumed["backend"]["updates"], 4)
+        self.assertEqual(resumed["method"]["version"], 4)
+        self.assertEqual(len(resumed["method"]["history"]), 2)
+        self.assertEqual([r["memory_reset_before"] for r in rows], [False] * 4)
+        self.assertEqual(len(list((root / "checkpoints").glob("*.pkl"))), 1)
+        # A clean run must reach the same combined context/parameter checkpoint.
+        self.config.output_dir = str(self.root / "baseline")
+        run(self.config, backend_factory=Backend, env_factory=FakeEnv)
+        baseline, _ = load_checkpoint(Path(self.config.output_dir))
+        self.assertEqual(resumed["method"], baseline["method"])
+        self.assertEqual(resumed["backend"], baseline["backend"])
+
     def test_task_scope_context_and_cheatsheet_reset(self):
         for method in ("icl", "dc-cumulative"):
             with self.subTest(method=method):

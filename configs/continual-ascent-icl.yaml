@@ -1,0 +1,34 @@
+# ASCENT parameter updates plus a rolling ICL episode window.
+method: ascent-icl
+action_mode: admissible
+window_episodes: 4
+max_steps: 50
+output_dir: runs/ascent-icl-task-blocked-admissible
+checkpoint_interval: 10
+memory_scope: stream
+stream:
+  order: task_blocked
+  seed: 42
+  task_order: [1, 2, 3, 4, 5, 6]
+  data_dir: ~/.cache/alfworld
+  split: valid_seen
+  manifest: null
+  limit: null
+model:
+  path: /data/jiawei/models/Qwen3.5-9B
+  device: cuda:0
+  devices: []
+  gpu_memory_gib: []
+  backend: hf
+  max_input_tokens: 65536
+  context_overflow: truncate_oldest
+  max_new_tokens: 1024
+ascent:
+  rank: 16
+  alpha: 32
+  learning_rate: 0.00015
+  optimizer_steps: 2
+  dropout: 0.0
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  logits_chunk_tokens: 32

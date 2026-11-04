@@ -39,10 +39,11 @@ class Method:
         return copy.deepcopy(messages)
 
     def observe_episode(self, episode):
-        if self.config.method == "icl":
+        if self.config.uses_icl:
             keep = self.config.window_episodes - 1
             self.history = (self.history + [copy.deepcopy(episode.messages)])[-keep:] if keep else []
-        elif self.config.method == "dc-cumulative":
+        # Context retention and parameter updates are independent in ASCENT+ICL.
+        if self.config.method == "dc-cumulative":
             before = self.cheatsheet
             version_before = self.cheatsheet_version
             messages = curator_messages(before, episode, self.config.cheatsheet_max_new_tokens)
@@ -62,7 +63,7 @@ class Method:
                     "input_tokens": len(generation.input_ids), "output_tokens": len(generation.output_ids),
                     "generation_seconds": generation.seconds, "generation_truncated": generation.truncated,
                     "optimizer_steps": 0}
-        elif self.config.method == "ascent":
+        elif self.config.is_ascent:
             if not episode.outcome["success"]:
                 return {"kind": "ascent", "skipped": True, "skip_reason": "unsuccessful_episode",
                         "optimizer_steps": 0, "seconds": 0.0, "loss": None,

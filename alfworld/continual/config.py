@@ -5,7 +5,8 @@ import yaml
 
 
 NTP_METHODS = ("history-ntp", "history-ntp-assistant", "history-ntp-assistant-success")
-METHODS = ("memoryless", "icl", "dc-cumulative", *NTP_METHODS, "ascent")
+ASCENT_METHODS = ("ascent", "ascent-icl")
+METHODS = ("memoryless", "icl", "dc-cumulative", *NTP_METHODS, *ASCENT_METHODS)
 
 
 @dataclass
@@ -72,7 +73,15 @@ class Config:
 
     @property
     def trains_parameters(self):
-        return self.is_ntp or self.method == "ascent"
+        return self.is_ntp or self.is_ascent
+
+    @property
+    def is_ascent(self):
+        return self.method in ASCENT_METHODS
+
+    @property
+    def uses_icl(self):
+        return self.method in ("icl", "ascent-icl")
 
     @property
     def is_ntp(self):
@@ -136,7 +145,7 @@ class Config:
             raise ValueError("learning_rate and max_grad_norm must be positive")
         if self.training.weight_decay < 0:
             raise ValueError("weight_decay must be nonnegative")
-        if self.method == "ascent":
+        if self.is_ascent:
             a = self.ascent
             for name in ("rank", "alpha", "optimizer_steps", "logits_chunk_tokens"):
                 value = getattr(a, name)

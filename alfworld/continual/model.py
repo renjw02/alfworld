@@ -65,18 +65,18 @@ class HFBackend:
         self.target_modules = []
         self.model.requires_grad_(False)
         if config.trains_parameters:
-            training = config.ascent if config.method == "ascent" else config.training
+            training = config.ascent if config.is_ascent else config.training
             from peft import LoraConfig, get_peft_model
             self.model = get_peft_model(model, LoraConfig(
                 task_type="CAUSAL_LM", r=training.rank,
                 lora_alpha=training.alpha, lora_dropout=training.dropout,
-                target_modules=["down_proj"] if config.method == "ascent" else "all-linear",
+                target_modules=["down_proj"] if config.is_ascent else "all-linear",
                 exclude_modules=["lm_head"], bias="none",
             ))
             self.target_modules = [name for name, module in self.model.named_modules() if hasattr(module, "lora_A")]
             if not self.target_modules:
                 raise RuntimeError("LoRA matched no modules")
-            self.trainer = (AscentTrainer(self.model, training) if config.method == "ascent"
+            self.trainer = (AscentTrainer(self.model, training) if config.is_ascent
                             else NTPTrainer(self.model, training))
         self.model.eval()
         self.model.config.use_cache = True
@@ -162,7 +162,7 @@ class HFBackend:
         return result
 
     def distill_episode(self, episode):
-        if self.config.method != "ascent" or not episode.outcome.get("success"):
+        if not self.config.is_ascent or not episode.outcome.get("success"):
             raise ValueError("ASCENT distillation requires a verified successful episode")
         text, kept, removed = success_record(episode)
         privileged_ids = self.tokenizer.encode(text, add_special_tokens=False)

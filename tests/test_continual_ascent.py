@@ -19,6 +19,54 @@ def episode():
 
 
 class AscentProtocolTests(unittest.TestCase):
+    def test_icl_history_success_gate_window_and_scope(self):
+        config = load_config("configs/continual-ascent-icl.yaml").validate()
+        self.assertTrue(config.is_ascent and config.uses_icl and config.trains_parameters)
+        config.window_episodes = 3
+        backend = MockBackend(config)
+        method = Method(config, backend)
+        method.begin_task("pick")
+        first = episode()
+        first.messages = [{"role": "user", "content": "failed first episode"}]
+        first.outcome["success"] = False
+        self.assertTrue(method.observe_episode(first)["skipped"])
+        self.assertEqual(backend.updates, 0)
+        self.assertEqual(method.history, [first.messages])
+        second = episode()
+        second.messages = [{"role": "user", "content": "successful second episode"}]
+        self.assertEqual(method.observe_episode(second)["version_after"], 1)
+        self.assertFalse(method.begin_task("clean"))
+        current = Episode("current", "clean", 2, [{"role": "user", "content": "current episode"}])
+        expected = first.messages + second.messages + current.messages
+        self.assertEqual(method.build_context(current)[1:], expected)
+        saved = copy.deepcopy(method.state_dict())
+        restored = Method(config, backend)
+        restored.load_state_dict(saved)
+        self.assertEqual(restored.build_context(current), method.build_context(current))
+        third = episode()
+        third.messages = [{"role": "user", "content": "third episode"}]
+        third.outcome["success"] = False
+        method.observe_episode(third)
+        self.assertEqual(method.history, [second.messages, third.messages])
+        third.messages[0]["content"] = "mutated"
+        self.assertEqual(method.history[-1][0]["content"], "third episode")
+        self.assertEqual(backend.updates, 1)
+        config.window_episodes = 1
+        method.observe_episode(third)
+        self.assertEqual(method.build_context(current)[1:], current.messages)
+
+        config.memory_scope = "task_type"
+        config.window_episodes = 3
+        backend = MockBackend(config)
+        method = Method(config, backend)
+        method.begin_task("pick")
+        method.observe_episode(second)
+        self.assertTrue(method.begin_task("clean"))
+        self.assertEqual((method.history, method.version, backend.updates), ([], 0, 0))
+        config.ascent.optimizer_steps = 0
+        with self.assertRaisesRegex(ValueError, "ascent.optimizer_steps"):
+            config.validate()
+
     def test_config_filter_gate_and_reset(self):
         config = load_config("configs/continual-ascent.yaml").validate()
         self.assertTrue(config.trains_parameters)
@@ -61,11 +109,18 @@ class AscentProtocolTests(unittest.TestCase):
 
 class AscentModelTests(unittest.TestCase):
     def test_exact_prefix_updates_teacher_freeze_and_resume(self):
+        self.check_model("ascent")
+
+    def test_icl_exact_prefix_updates_teacher_freeze_and_resume(self):
+        self.check_model("ascent-icl")
+
+    def check_model(self, method):
         import torch
+        from types import SimpleNamespace
         from transformers import Qwen3_5TextConfig, Qwen3_5ForCausalLM
         torch.set_num_threads(2)
         torch.manual_seed(42)
-        config = Config(method="ascent")
+        config = Config(method=method)
         config.model.device = "cpu"
         config.ascent.logits_chunk_tokens = 1
         architecture = Qwen3_5TextConfig(
@@ -78,7 +133,8 @@ class AscentModelTests(unittest.TestCase):
             rope_parameters={"rope_type": "default", "rope_theta": 10000.0,
                              "partial_rotary_factor": 1.0, "mrope_section": [1, 1, 2]},
         )
-        backend = HFBackend(config, model=Qwen3_5ForCausalLM(architecture), tokenizer=object())
+        backend = HFBackend(config, model=Qwen3_5ForCausalLM(architecture),
+                            tokenizer=SimpleNamespace(encode=lambda text, **kwargs: [10, 11]))
         self.assertTrue(all("down_proj" in name for name in backend.target_modules))
         trainer = backend.trainer
         e, z = episode(), [10, 11]
@@ -90,7 +146,7 @@ class AscentModelTests(unittest.TestCase):
             head = backend.model.get_base_model().get_output_embeddings()
             torch.testing.assert_close(head(teacher_before), full[:, -3:])
         initial = copy.deepcopy(backend.state_dict())
-        result = trainer.train(e.steps, z, 4096)
+        result = backend.distill_episode(e)
         self.assertEqual(result["optimizer_steps"], 2)
         self.assertEqual(result["target_tokens"], 5)  # Invalid turn AND EOS included.
         self.assertEqual(result["training_turns"], 2)
