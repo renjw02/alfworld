@@ -1,0 +1,384 @@
+{
+  "created_at_utc": "2026-11-04T07:54:26.615280+00:00",
+  "length_audit": {
+    "source_runs": [
+      "runs/continual-matrix-20261101T135608Z/history-ntp-assistant-success-stream-1",
+      "runs/continual-matrix-20261101T135608Z/history-ntp-assistant-success-stream-2",
+      "runs/continual-matrix-20261101T135608Z/history-ntp-assistant-success-stream-3"
+    ],
+    "successful_episodes": 207,
+    "eligible_samples": 2653,
+    "rejected_interactions": {
+      "unexecuted_or_inadmissible": 118,
+      "format_or_truncated": 13,
+      "unchanged_observation": 3
+    },
+    "length_percentiles": {
+      "0": 428,
+      "50": 1471,
+      "90": 2732,
+      "95": 3016,
+      "99": 3702,
+      "100": 4653
+    },
+    "budget_overflows": {
+      "2048": 755,
+      "4096": 7,
+      "8192": 0,
+      "16384": 0
+    },
+    "policy": "skip whole overlength sample; keep all five recent interactions and target EOS",
+    "prefix_checks": 2653,
+    "trained": false
+  },
+  "pilots": {
+    "2048": {
+      "source_runs": [
+        "runs/continual-matrix-20261101T135608Z/history-ntp-assistant-success-stream-1",
+        "runs/continual-matrix-20261101T135608Z/history-ntp-assistant-success-stream-2",
+        "runs/continual-matrix-20261101T135608Z/history-ntp-assistant-success-stream-3"
+      ],
+      "successful_episodes": 207,
+      "eligible_samples": 2653,
+      "rejected_interactions": {
+        "unexecuted_or_inadmissible": 118,
+        "format_or_truncated": 13,
+        "unchanged_observation": 3
+      },
+      "length_percentiles": {
+        "0": 428,
+        "50": 1471,
+        "90": 2732,
+        "95": 3016,
+        "99": 3702,
+        "100": 4653
+      },
+      "budget_overflows": {
+        "2048": 755,
+        "4096": 7,
+        "8192": 0,
+        "16384": 0
+      },
+      "policy": "skip whole overlength sample; keep all five recent interactions and target EOS",
+      "prefix_checks": 2653,
+      "trained": true,
+      "config": {
+        "method": "success-only-sft",
+        "action_mode": "admissible",
+        "window_episodes": 4,
+        "max_steps": 50,
+        "output_dir": "runs/experiment",
+        "cheatsheet_max_new_tokens": 2048,
+        "checkpoint_interval": 10,
+        "memory_scope": "stream",
+        "stream": {
+          "order": "shuffled",
+          "seed": 42,
+          "task_order": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "data_dir": "~/.cache/alfworld",
+          "split": "valid_seen",
+          "manifest": null,
+          "limit": null
+        },
+        "model": {
+          "path": "/data/jiawei/models/Qwen3.5-9B",
+          "device": "cuda:1",
+          "devices": [],
+          "gpu_memory_gib": [],
+          "max_input_tokens": 65536,
+          "context_overflow": "truncate_oldest",
+          "max_new_tokens": 1024,
+          "backend": "hf"
+        },
+        "training": {
+          "rank": 16,
+          "alpha": 32,
+          "dropout": 0.0,
+          "learning_rate": 1e-05,
+          "weight_decay": 0.0,
+          "max_grad_norm": 1.0,
+          "chunk_tokens": 2048
+        },
+        "ascent": {
+          "rank": 16,
+          "alpha": 32,
+          "dropout": 0.0,
+          "learning_rate": 0.00015,
+          "weight_decay": 0.0,
+          "max_grad_norm": 1.0,
+          "optimizer_steps": 2,
+          "logits_chunk_tokens": 32
+        },
+        "sft": {
+          "max_seq_tokens": 2048,
+          "history_interactions": 5
+        }
+      },
+      "training": {
+        "skipped": false,
+        "optimizer_steps": 3,
+        "total_optimizer_steps": 3,
+        "samples_trained": 3,
+        "target_tokens": 472,
+        "loss": 0.20475498214364052,
+        "loss_reduction": "mean_per_response",
+        "records": [
+          {
+            "step": 10,
+            "loss": 0.1499488800764084,
+            "gradient_norm": 1.565467357635498,
+            "tokens": 2048,
+            "target_tokens": 130,
+            "optimizer_step": 1
+          },
+          {
+            "step": 24,
+            "loss": 0.42317286133766174,
+            "gradient_norm": 2.7250943183898926,
+            "tokens": 2046,
+            "target_tokens": 141,
+            "optimizer_step": 2
+          },
+          {
+            "step": 24,
+            "loss": 0.041143205016851425,
+            "gradient_norm": 0.8324252367019653,
+            "tokens": 2046,
+            "target_tokens": 201,
+            "optimizer_step": 3
+          }
+        ],
+        "seconds": 7.266282033990137
+      },
+      "changed_lora_tensors": 496,
+      "peak_allocated_gib": 19.10684299468994,
+      "sources": [
+        {
+          "source": "runs/continual-matrix-20261101T135608Z/history-ntp-assistant-success-stream-1/traces/20261101T135838.288793Z/episodes/0029/0c8f0e3d41d54d748c0b9f435a30293e/episode.json",
+          "step": 10,
+          "tokens": 2048,
+          "history_steps": [
+            5,
+            6,
+            7,
+            8,
+            9
+          ],
+          "target_tokens": 130
+        },
+        {
+          "source": "runs/continual-matrix-20261101T135608Z/history-ntp-assistant-success-stream-1/traces/20261101T135838.288793Z/episodes/0061/bb85b4f129374eceacd726bad29c4845/episode.json",
+          "step": 24,
+          "tokens": 2046,
+          "history_steps": [
+            19,
+            20,
+            21,
+            22,
+            23
+          ],
+          "target_tokens": 141
+        },
+        {
+          "source": "runs/continual-matrix-20261101T135608Z/history-ntp-assistant-success-stream-1/traces/20261101T135838.288793Z/episodes/0071/5d392a9bf84a4d58a0f65f1db9c18331/episode.json",
+          "step": 24,
+          "tokens": 2046,
+          "history_steps": [
+            19,
+            20,
+            21,
+            22,
+            23
+          ],
+          "target_tokens": 201
+        }
+      ]
+    },
+    "4096": {
+      "source_runs": [
+        "runs/continual-matrix-20261101T135608Z/history-ntp-assistant-success-stream-1",
+        "runs/continual-matrix-20261101T135608Z/history-ntp-assistant-success-stream-2",
+        "runs/continual-matrix-20261101T135608Z/history-ntp-assistant-success-stream-3"
+      ],
+      "successful_episodes": 207,
+      "eligible_samples": 2653,
+      "rejected_interactions": {
+        "unexecuted_or_inadmissible": 118,
+        "format_or_truncated": 13,
+        "unchanged_observation": 3
+      },
+      "length_percentiles": {
+        "0": 428,
+        "50": 1471,
+        "90": 2732,
+        "95": 3016,
+        "99": 3702,
+        "100": 4653
+      },
+      "budget_overflows": {
+        "2048": 755,
+        "4096": 7,
+        "8192": 0,
+        "16384": 0
+      },
+      "policy": "skip whole overlength sample; keep all five recent interactions and target EOS",
+      "trained": true,
+      "config": {
+        "method": "success-only-sft",
+        "action_mode": "admissible",
+        "window_episodes": 4,
+        "max_steps": 50,
+        "output_dir": "runs/experiment",
+        "cheatsheet_max_new_tokens": 2048,
+        "checkpoint_interval": 10,
+        "memory_scope": "stream",
+        "stream": {
+          "order": "shuffled",
+          "seed": 42,
+          "task_order": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6
+          ],
+          "data_dir": "~/.cache/alfworld",
+          "split": "valid_seen",
+          "manifest": null,
+          "limit": null
+        },
+        "model": {
+          "path": "/data/jiawei/models/Qwen3.5-9B",
+          "device": "cuda:1",
+          "devices": [],
+          "gpu_memory_gib": [],
+          "max_input_tokens": 65536,
+          "context_overflow": "truncate_oldest",
+          "max_new_tokens": 1024,
+          "backend": "hf"
+        },
+        "training": {
+          "rank": 16,
+          "alpha": 32,
+          "dropout": 0.0,
+          "learning_rate": 1e-05,
+          "weight_decay": 0.0,
+          "max_grad_norm": 1.0,
+          "chunk_tokens": 2048
+        },
+        "ascent": {
+          "rank": 16,
+          "alpha": 32,
+          "dropout": 0.0,
+          "learning_rate": 0.00015,
+          "weight_decay": 0.0,
+          "max_grad_norm": 1.0,
+          "optimizer_steps": 2,
+          "logits_chunk_tokens": 32
+        },
+        "sft": {
+          "max_seq_tokens": 4096,
+          "history_interactions": 5
+        }
+      },
+      "training": {
+        "skipped": false,
+        "optimizer_steps": 3,
+        "total_optimizer_steps": 3,
+        "samples_trained": 3,
+        "target_tokens": 1573,
+        "loss": 0.02481150347739458,
+        "loss_reduction": "mean_per_response",
+        "records": [
+          {
+            "step": 13,
+            "loss": 0.03459978476166725,
+            "gradient_norm": 0.4753495752811432,
+            "tokens": 4085,
+            "target_tokens": 531,
+            "optimizer_step": 1
+          },
+          {
+            "step": 14,
+            "loss": 0.01274010632187128,
+            "gradient_norm": 0.5776407122612,
+            "tokens": 4048,
+            "target_tokens": 521,
+            "optimizer_step": 2
+          },
+          {
+            "step": 12,
+            "loss": 0.02709461934864521,
+            "gradient_norm": 0.47254207730293274,
+            "tokens": 4036,
+            "target_tokens": 521,
+            "optimizer_step": 3
+          }
+        ],
+        "seconds": 13.358110686007421
+      },
+      "changed_lora_tensors": 496,
+      "peak_allocated_gib": 21.084091663360596,
+      "sources": [
+        {
+          "source": "runs/continual-matrix-20261101T135608Z/history-ntp-assistant-success-stream-2/traces/20261101T231258.034652Z/episodes/0123/8a7d4e6d0ad044b9b09c0c09083cb90c/episode.json",
+          "step": 13,
+          "tokens": 4085,
+          "history_steps": [
+            8,
+            9,
+            10,
+            11,
+            12
+          ],
+          "target_tokens": 531
+        },
+        {
+          "source": "runs/continual-matrix-20261101T135608Z/history-ntp-assistant-success-stream-2/traces/20261101T231258.034652Z/episodes/0123/8a7d4e6d0ad044b9b09c0c09083cb90c/episode.json",
+          "step": 14,
+          "tokens": 4048,
+          "history_steps": [
+            9,
+            10,
+            11,
+            12,
+            13
+          ],
+          "target_tokens": 521
+        },
+        {
+          "source": "runs/continual-matrix-20261101T135608Z/history-ntp-assistant-success-stream-2/traces/20261101T231258.034652Z/episodes/0123/8a7d4e6d0ad044b9b09c0c09083cb90c/episode.json",
+          "step": 12,
+          "tokens": 4036,
+          "history_steps": [
+            7,
+            8,
+            9,
+            10,
+            11
+          ],
+          "target_tokens": 521
+        }
+      ]
+    }
+  },
+  "source_sha256": {
+    "alfworld/continual/sft.py": "dd109961321e0b8715a76e20bc89ac3019a287db9c0b571b35ea06bcda3c5f38",
+    "alfworld/continual/model.py": "31f33f982d7e3cd8196e996a9f7a67a538efd0a5214e64ca118c6c791deebeec",
+    "alfworld/continual/methods.py": "6859dcfcdf5732c25c45cf8b0b6b2533eaa36a03cc9475e8a6c0c4a3dbfc5bda",
+    "scripts/pilot_success_only_sft.py": "c6eb49a3d6f727e25eae65e97fba222a14394765378d3d29ece7a34dbabf79cd"
+  },
+  "packages": {
+    "torch": "2.15.0",
+    "transformers": "5.22.1",
+    "peft": "0.21.2"
+  }
+}

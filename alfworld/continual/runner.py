@@ -164,8 +164,9 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             saved_config["model"].setdefault("gpu_memory_gib", [])
             saved_config["model"].setdefault("context_overflow", "error")
             from dataclasses import asdict
-            from .config import AscentConfig
+            from .config import AscentConfig, SFTConfig
             saved_config.setdefault("ascent", asdict(AscentConfig()))
+            saved_config.setdefault("sft", asdict(SFTConfig()))
             current_config = config.to_dict()
             if not config.trains_parameters:
                 # Placement changes are recorded per invocation, not experiment semantics.

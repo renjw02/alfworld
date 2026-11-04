@@ -6,6 +6,7 @@ import time
 from .types import Generation
 from .training import NTPTrainer
 from .ascent import AscentTrainer, success_record
+from .sft import SFTTrainer, build_samples
 from .context import fit_context
 
 
@@ -77,6 +78,7 @@ class HFBackend:
             if not self.target_modules:
                 raise RuntimeError("LoRA matched no modules")
             self.trainer = (AscentTrainer(self.model, training) if config.method == "ascent"
+                            else SFTTrainer(self.model, training) if config.method == "success-only-sft"
                             else NTPTrainer(self.model, training))
         self.model.eval()
         self.model.config.use_cache = True
@@ -161,6 +163,16 @@ class HFBackend:
                       loss_scope="assistant" if self.config.assistant_only else "full")
         return result
 
+    def sft_episode(self, episode):
+        if self.config.method != "success-only-sft":
+            raise ValueError("SFT requested for another method")
+        samples, rejected = build_samples(self.config, episode, self.serialize, self.tokenizer)
+        result = self.trainer.train_samples(samples)
+        result.update(kind="success-only-sft", samples=samples, rejected=rejected,
+                      max_seq_tokens=self.config.sft.max_seq_tokens,
+                      loss_scope="current_response_including_eos")
+        return result
+
     def distill_episode(self, episode):
         if self.config.method != "ascent" or not episode.outcome.get("success"):
             raise ValueError("ASCENT distillation requires a verified successful episode")
@@ -235,6 +247,14 @@ class MockBackend:
     def train_episode(self, messages):
         self.updates += 1
         return {"mock": True, "optimizer_steps": 0, "training_text": json.dumps(messages), "loss": None}
+
+    def sft_episode(self, episode):
+        from .sft import interaction_error
+        retained = [s["step"] for s in episode.steps if interaction_error(s) is None] if episode.outcome.get("success") else []
+        if retained:
+            self.updates += 1
+        return {"kind": "success-only-sft", "mock": True, "optimizer_steps": 0,
+                "skipped": not bool(retained), "retained_steps": retained, "loss": None}
 
     def distill_episode(self, episode):
         text, kept, removed = success_record(episode)

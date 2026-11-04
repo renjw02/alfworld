@@ -86,6 +86,23 @@ class ProtocolTests(unittest.TestCase):
         resumed, _ = load_checkpoint(Path(self.config.output_dir))
         self.assertEqual(resumed["backend"], state["backend"])
 
+    def test_sft_runner_checkpoint_and_resume(self):
+        self.config.method = "success-only-sft"
+        self.config.checkpoint_interval = 1
+        result = run(self.config, backend_factory=MockBackend, env_factory=FakeEnv)
+        self.assertEqual(result["episodes"], 2)
+        root = Path(self.config.output_dir)
+        state, completed = load_checkpoint(root)
+        self.assertEqual(state["backend"]["updates"], 2)
+        self.assertEqual(state["method"]["version"], 2)
+        for row in completed:
+            update = json.loads((root / row["attempt_dir"] / "update.json").read_text())
+            self.assertEqual(update["retained_steps"], [1])
+            self.assertEqual(update["kind"], "success-only-sft")
+        run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
+        resumed, _ = load_checkpoint(root)
+        self.assertEqual(resumed["backend"], state["backend"])
+
     def test_default_config(self):
         config = load_config("configs/continual.yaml").validate()
         self.assertEqual(config.model.max_new_tokens, 1024)
