@@ -1,0 +1,89 @@
+{
+  "created_at_utc": "2026-11-05T09:42:42.533546+00:00",
+  "seed": 42,
+  "memory_scope": "stream",
+  "stream_order": "task_blocked",
+  "episode_id_and_task_order_match": true,
+  "excluded": [
+    {
+      "run": "icl-stream-1",
+      "episodes": 69,
+      "reason": "incomplete"
+    }
+  ],
+  "snapshot_sha256": {
+    "icl+dc/cumulative_reward.csv": "2000e9e5cf368d25b75cea9ab1c9eef1183e61e75a52270c9a780f77b27c952f",
+    "memoryless_and_ascent/instances.csv": "8cba90e58eee86df93e989501689e02f8ca849fe060984f5a2507d4d8cb0b0bf",
+    "memoryless_and_ascent/provenance.json": "7a043bebc305c12fa1e52d778d4a3f3217b42916a646c334b16c7df19721afb2",
+    "icl+dc/success_only_sft_instances.csv": "ea3fd87e0c71924d9c3e6b515920fa5471f6010996b38f93c1d9cf7a519e838a",
+    "icl+dc/success_only_sft_training_snapshot.json": "0f50544ebc801594fd8e83286042f0dee7bbf510131ad22faadab9fa198f84f5"
+  },
+  "memoryless_ascent_original_sources": {
+    "memoryless/42": {
+      "source": "runs/blocked-memoryless-3runs-20261102/seed-42/commit.json",
+      "sha256": "eefdf214a44021ea276af2da2ce88091c18a1fce62b2442c76460b67d62c9ccd"
+    },
+    "ascent/42": {
+      "source": "runs/blocked-ascent-3runs-20261102/seed-42/commit.json",
+      "sha256": "e996973c63dbac55cb5937f0aea571fdc7f8ba915b3af42473e80ccb609b621d"
+    }
+  },
+  "groups": {
+    "icl": {
+      "n": 2,
+      "runs": [
+        "icl-stream-2",
+        "icl-stream-3"
+      ],
+      "final_rewards": [
+        91.0,
+        117.0
+      ],
+      "mean_final_reward": 104.0
+    },
+    "dc-cumulative": {
+      "n": 3,
+      "runs": [
+        "dc-cumulative-stream-1",
+        "dc-cumulative-stream-2",
+        "dc-cumulative-stream-3"
+      ],
+      "final_rewards": [
+        98.0,
+        119.0,
+        114.0
+      ],
+      "mean_final_reward": 110.33333333333333
+    },
+    "memoryless": {
+      "n": 1,
+      "runs": [
+        "memoryless-seed42"
+      ],
+      "final_rewards": [
+        78.0
+      ],
+      "mean_final_reward": 78.0
+    },
+    "ascent": {
+      "n": 1,
+      "runs": [
+        "ascent-seed42"
+      ],
+      "final_rewards": [
+        75.0
+      ],
+      "mean_final_reward": 75.0
+    },
+    "success-only-sft": {
+      "n": 1,
+      "runs": [
+        "success-only-sft-seed42"
+      ],
+      "final_rewards": [
+        65.0
+      ],
+      "mean_final_reward": 65.0
+    }
+  }
+}
