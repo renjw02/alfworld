@@ -188,6 +188,7 @@ def main():
     fig.tight_layout(rect=(0,0,1,.96));fig.savefig(OUT/'individual_runs.png',dpi=180,bbox_inches='tight');plt.close(fig)
 
     lines=['# ICL 与 DC-Cumulative：task_blocked 结果分析',
+           '\n新增：[ICL、DC、Memoryless、ASCENT 四方法合图（seed 42 / stream）](four_methods_seed42_stream.md)。',
            f'\n生成时间：{snapshot["generated_at_utc"]}。数据来自本机已提交实验记录。',
            '\n## 累计 reward 折线图',
            '\n![累计 reward](cumulative_reward.png)',

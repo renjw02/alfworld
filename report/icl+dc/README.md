@@ -1,5 +1,7 @@
 # ICL 与 DC-Cumulative：task_blocked 结果分析
 
+新增：[ICL、DC、Memoryless、ASCENT 四方法合图（seed 42 / stream）](four_methods_seed42_stream.md)。
+
 生成时间：2026-11-05T09:13:25.978108+00:00。数据来自本机已提交实验记录。
 
 ## 累计 reward 折线图
