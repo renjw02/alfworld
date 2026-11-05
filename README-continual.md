@@ -59,6 +59,13 @@ Linux x86_64、Python 3.11+ 的 Torch/TorchVision 使用官方 CUDA 12.8 wheel �
 | `tt-opsd` | 当前局完整历史 | 仅成功 episode，teacher 逐轮接收任务、该轮回复及返回观察，更新 LoRA |
 
 `window_episodes` 默认 4，**包含当前局**；K=1 的 ICL 与 memoryless 输入一致。
+
+`icl` 和 `ascent-icl` 可设置 `icl_success_only: true`（命令行 `--icl-success-only`）。
+开启后，历史窗口只保存最近 K−1 个包含有效交互的成功 episode；失败局不占窗口。
+有效交互沿用 ASCENT 标准：格式正确、动作已执行，且属于执行前的 admissible commands。
+无效动作的 reasoning/action 及对应反馈一起移除，保留初始任务观察、有效动作及反馈和终局信息。
+当前局仍使用完整交互历史，原始 episode 日志和参数更新逻辑不变。
+默认 `false` 保持保存所有轨迹的行为；`--no-icl-success-only` 可覆盖 YAML 中的开启设置。
 所有历史保留 reasoning、action、观察、分数、格式反馈和终局反馈。
 每个方法在独立输出目录从同一初始模型开始。默认 `memory_scope: stream`，
 切换任务类型时不清除历史或参数。

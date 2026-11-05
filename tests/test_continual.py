@@ -29,6 +29,76 @@ class FakeEnv:
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_icl_success_only_history_and_resume(self):
+        class Env(FakeEnv):
+            def step(self, action):
+                if action == "invented command":
+                    return "Nothing happens.", 0, False, {"admissible_commands": ["look"], "won": False}
+                return super().step(action)
+
+        class Backend(MockBackend):
+            def generate(self, messages, **kwargs):
+                start = max(i for i, m in enumerate(messages)
+                            if m["content"].startswith("BEGIN EPISODE"))
+                turn = sum(m["role"] == "assistant" for m in messages[start:])
+                text = ["malformed response", "Reasoning: try\nAction: invented command",
+                        "Reasoning: inspect\nAction: look"][turn]
+                prompt = json.dumps(messages)
+                return Generation(text, prompt, list(prompt.encode()), list(text.encode()), 0.0)
+
+        for method_name in ("icl", "ascent-icl"):
+            with self.subTest(method=method_name):
+                self.config.method = method_name
+                self.config.output_dir = str(self.root / method_name)
+                self.config.icl_success_only = True
+                self.config.max_steps = 3
+                self.config.window_episodes = 3
+                run(self.config, backend_factory=Backend, env_factory=Env)
+                state, _ = load_checkpoint(Path(self.config.output_dir))
+                self.assertEqual(len(state["method"]["history"]), 2)
+                for messages in state["method"]["history"]:
+                    self.assertEqual(len(messages), 4)
+                    self.assertTrue(messages[0]["content"].startswith("BEGIN EPISODE"))
+                    self.assertEqual(messages[1]["content"], "Reasoning: inspect\nAction: look")
+                    self.assertIn("Found it.", messages[2]["content"])
+                    self.assertIn("Success: True", messages[3]["content"])
+                run(self.config, resume=True, backend_factory=Backend, env_factory=Env)
+                restored, _ = load_checkpoint(Path(self.config.output_dir))
+                self.assertEqual(restored["method"], state["method"])
+                self.config.icl_success_only = False
+                with self.assertRaisesRegex(ValueError, "Resume configuration differs"):
+                    run(self.config, resume=True, backend_factory=Backend, env_factory=Env)
+
+    def test_icl_success_only_window_and_isolation(self):
+        config = Config(method="icl", icl_success_only=True, window_episodes=3)
+        method = Method(config, MockBackend(config))
+        def episode(name, success=True, valid=True):
+            return Episode(name, "pick", 0,
+                           messages=[{"role": "user", "content": name},
+                                     {"role": "assistant", "content": "look"},
+                                     {"role": "user", "content": "feedback"},
+                                     {"role": "user", "content": "terminal"}],
+                           steps=[dict(format_error=None, executed_action="look",
+                                       action="look", admissible_commands=["look"] if valid else [])],
+                           outcome={"success": success})
+        for name in ("first", "second", "third"):
+            e = episode(name)
+            method.observe_episode(e)
+            e.messages[0]["content"] = "mutated"
+        self.assertEqual([m[0]["content"] for m in method.history], ["second", "third"])
+        saved = copy.deepcopy(method.history)
+        method.observe_episode(episode("failed", success=False))
+        method.observe_episode(episode("empty", valid=False))
+        self.assertEqual(method.history, saved)
+        current = episode("current", success=False)
+        self.assertEqual(method.build_context(current)[-4:], current.messages)
+        config.window_episodes = 1
+        method.observe_episode(current)
+        self.assertEqual(method.history, [])
+        config.icl_success_only = "false"
+        with self.assertRaisesRegex(ValueError, "icl_success_only"):
+            config.validate()
+
     def test_layer_sharding_and_inference_resume(self):
         mapping = layer_device_map(32, ["cuda:0", "cuda:1"])
         self.assertEqual(mapping["model.layers.15"], "cuda:0")
@@ -575,6 +645,7 @@ class ProtocolTests(unittest.TestCase):
             run(self.config, backend_factory=FailingBackend, env_factory=FakeEnv)
         root = Path(self.config.output_dir)
         saved = json.loads((root / "config.json").read_text())
+        saved.pop("icl_success_only")
         saved.pop("checkpoint_interval")
         saved.pop("cheatsheet_max_new_tokens")
         (root / "config.json").write_text(json.dumps(saved))

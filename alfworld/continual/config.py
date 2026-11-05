@@ -69,6 +69,7 @@ class Config:
     method: str = "memoryless"
     action_mode: str = "admissible"
     window_episodes: int = 4
+    icl_success_only: bool = False  # only valid interactions from successful episodes
     max_steps: int = 50
     output_dir: str = "runs/experiment"
     cheatsheet_max_new_tokens: int = 2048
@@ -111,6 +112,8 @@ class Config:
     def validate(self):
         if self.method not in METHODS:
             raise ValueError("Unknown method")
+        if not isinstance(self.icl_success_only, bool):
+            raise ValueError("icl_success_only must be a boolean")
         if self.action_mode not in ("free", "admissible"):
             raise ValueError("Unknown action_mode")
         if self.stream.order not in ("shuffled", "task_blocked"):

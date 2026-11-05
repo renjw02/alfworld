@@ -44,7 +44,22 @@ class Method:
     def observe_episode(self, episode):
         if self.config.uses_icl:
             keep = self.config.window_episodes - 1
-            self.history = (self.history + [copy.deepcopy(episode.messages)])[-keep:] if keep else []
+            messages = episode.messages
+            if self.config.icl_success_only:
+                messages = []
+                if episode.outcome.get("success"):
+                    # Runner messages: initial observation, (response, feedback)*, terminal.
+                    # Drop each invalid action together with its resulting feedback.
+                    for index, step in enumerate(episode.steps):
+                        valid = (step["format_error"] is None and step["executed_action"] is not None
+                                 and step["action"] in step["admissible_commands"])
+                        if valid:
+                            messages.extend(episode.messages[1 + 2 * index:3 + 2 * index])
+                    if messages:
+                        messages = [episode.messages[0], *messages, episode.messages[-1]]
+            if messages:
+                self.history.append(copy.deepcopy(messages))
+            self.history = self.history[-keep:] if keep else []
         # Context retention and parameter updates are independent in ASCENT+ICL.
         if self.config.method == "dc-cumulative":
             before = self.cheatsheet

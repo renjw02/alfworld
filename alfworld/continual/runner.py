@@ -163,6 +163,7 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             saved_config.setdefault("checkpoint_interval", 10)
             saved_config.setdefault("cheatsheet_max_new_tokens", 2048)
             saved_config.setdefault("memory_scope", "stream")
+            saved_config.setdefault("icl_success_only", False)
             saved_config["model"].setdefault("devices", [])
             saved_config["model"].setdefault("gpu_memory_gib", [])
             saved_config["model"].setdefault("context_overflow", "error")

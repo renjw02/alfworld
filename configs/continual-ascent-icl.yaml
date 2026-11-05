@@ -2,6 +2,7 @@
 method: ascent-icl
 action_mode: admissible
 window_episodes: 4
+icl_success_only: false             # only valid interactions from successful episodes
 max_steps: 50
 output_dir: runs/ascent-icl-task-blocked-admissible
 checkpoint_interval: 10
