@@ -1,5 +1,7 @@
 # ICL 与 DC-Cumulative：task_blocked 结果分析
 
+补充：[五种方法各阶段完成结果柱状图](five_methods_stage_results.md)。
+
 最新：[加入 Success-only SFT 的五方法合图（英文图例）](five_methods_seed42_stream.md) · [SFT 更新数据来源](success_only_sft_training_sources.md)。
 
 新增：[ICL、DC、Memoryless、ASCENT 四方法合图（seed 42 / stream）](four_methods_seed42_stream.md)。

@@ -2,6 +2,8 @@
 
 ![五种方法趋势](five_methods_seed42_stream.png)
 
+补充：[各阶段完成结果柱状图](five_methods_stage_results.md)。
+
 共同条件为 Qwen3.5-9B、valid_seen、seed 42、task_blocked、memory_scope=stream、admissible、最多 50 步。逐条核对五种方法的 episode ID 和 task_type，140 个任务的顺序完全一致。横轴为任务序号，纵轴为已完成任务的 reward 累积；reward 为 0/1，所以也等于累计成功任务数。
 
 | 方法 | 完整运行数 | 各次最终 reward | 图中最终值 | 成功率 |
