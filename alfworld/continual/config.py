@@ -6,7 +6,7 @@ import yaml
 
 NTP_METHODS = ("history-ntp", "history-ntp-assistant", "history-ntp-assistant-success")
 ASCENT_METHODS = ("ascent", "ascent-icl")
-METHODS = ("memoryless", "icl", "dc-cumulative", *NTP_METHODS, *ASCENT_METHODS, "tt-opsd")
+METHODS = ("memoryless", "icl", "dc-cumulative", *NTP_METHODS, *ASCENT_METHODS, "tt-opsd", "success-only-sft")
 
 
 @dataclass
@@ -57,6 +57,14 @@ class AscentConfig:
 
 
 @dataclass
+class SFTConfig:
+    max_seq_tokens: int = 2048
+    history_interactions: int = 5
+    batch_size: int = 2
+    gradient_accumulation_steps: int = 4
+
+
+@dataclass
 class Config:
     method: str = "memoryless"
     action_mode: str = "admissible"
@@ -70,10 +78,11 @@ class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     ascent: AscentConfig = field(default_factory=AscentConfig)  # shared by ASCENT and TT-OPSD
+    sft: SFTConfig = field(default_factory=SFTConfig)
 
     @property
     def trains_parameters(self):
-        return self.is_ntp or self.is_distillation
+        return self.is_ntp or self.is_distillation or self.method == "success-only-sft"
 
     @property
     def is_tt_opsd(self):
@@ -153,6 +162,11 @@ class Config:
             raise ValueError("learning_rate and max_grad_norm must be positive")
         if self.training.weight_decay < 0:
             raise ValueError("weight_decay must be nonnegative")
+        for name, minimum in (("max_seq_tokens", 2), ("history_interactions", 0),
+                              ("batch_size", 1), ("gradient_accumulation_steps", 1)):
+            value = getattr(self.sft, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+                raise ValueError(f"sft.{name} must be an integer >= {minimum}")
         if self.is_distillation:
             a = self.ascent
             for name in ("rank", "alpha", "optimizer_steps", "logits_chunk_tokens"):
@@ -175,6 +189,6 @@ class Config:
 
 def load_config(path):
     values = yaml.safe_load(Path(path).read_text()) or {}
-    for name, cls in (("stream", StreamConfig), ("model", ModelConfig), ("training", TrainingConfig), ("ascent", AscentConfig)):
+    for name, cls in (("stream", StreamConfig), ("model", ModelConfig), ("training", TrainingConfig), ("ascent", AscentConfig), ("sft", SFTConfig)):
         values[name] = cls(**values.get(name, {}))
     return Config(**values)

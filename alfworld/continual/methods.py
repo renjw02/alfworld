@@ -30,6 +30,9 @@ class Method:
         return reset
 
     def build_context(self, episode):
+        if self.config.method == "success-only-sft":
+            from .sft import rollout_context
+            return rollout_context(self.config, episode)
         messages = [system_message(self.config.action_mode)]
         if self.config.method == "dc-cumulative":
             messages.append(reference_message(self.cheatsheet))
@@ -63,13 +66,14 @@ class Method:
                     "input_tokens": len(generation.input_ids), "output_tokens": len(generation.output_ids),
                     "generation_seconds": generation.seconds, "generation_truncated": generation.truncated,
                     "optimizer_steps": 0}
-        elif self.config.is_distillation:
+        elif self.config.is_distillation or self.config.method == "success-only-sft":
             if not episode.outcome["success"]:
-                return {"kind": "tt-opsd" if self.config.is_tt_opsd else "ascent",
+                return {"kind": "ascent" if self.config.is_ascent else self.config.method,
                         "skipped": True, "skip_reason": "unsuccessful_episode",
                         "optimizer_steps": 0, "seconds": 0.0, "loss": None,
                         "version_before": self.version, "version_after": self.version}
-            result = self.backend.distill_episode(episode)
+            result = (self.backend.sft_episode(episode) if self.config.method == "success-only-sft"
+                      else self.backend.distill_episode(episode))
             result["version_before"] = self.version
             if not result.get("skipped", False):
                 self.version += 1

@@ -429,3 +429,52 @@ NTP 更新也是模拟的。真正的参数更新由小型 Qwen3.5 测试验证�
 模块职责：`stream/environment` 管理任务与环境；`prompting/types` 管理 ReAct 和轨迹；
 `methods` 管理跨局状态；`model/training` 管理生成和 NTP；`runner` 调度；
 `logging/analysis` 负责可恢复日志和离线指标。所有代码在 `alfworld/continual/`。
+
+## Success-only SFT：按交互构造训练样本
+
+`success-only-sft` 仅在整局成功后更新，并逐步排除格式错误、截断、未执行或列表外动作、
+`Nothing happens.` 以及非终局的 observation 未变化步骤。ALFWorld 没有逐步进展奖励，
+这里的“成功交互”是可核查的有效交互筛选，不保证每步都是最短成功路径必需的动作。
+失败/无效步骤仍可出现在之前 5 次交互的历史上下文中，但不会成为监督目标。
+
+每条训练样本单独包含 system prompt、从初始 observation 提取的 task description、
+之前最多 5 次交互的 observation / reasoning / action / feedback、当前 observation 和合法命令，
+再接本次完整的 reasoning/action 和 EOS。loss 仅覆盖本次回答和 EOS，历史回答与所有用户信息
+都 mask 为 `-100`。构造回答前缀直接使用与推理相同的 generation template；新方法推理时也
+使用同样的 5 次交互窗口，不向模型提供当前交互的未来反馈或整局成功结果。
+
+不再按 `training.chunk_tokens` 切块。使用 mini-batch 和梯度累积，沿用 `training` 中的 LoRA 和 AdamW 参数。
+默认 `sft.batch_size: 2`、`sft.gradient_accumulation_steps: 4`，有效 batch 为 8 条交互样本。
+每个成功 episode 的更新次数为 `ceil(有效样本数 / 8)`；最后不足 8 条也更新一次，
+按实际样本数归一化，各回答内部按目标 token 取均值。Padding、历史和观察不参与 loss，
+梯度裁剪与 optimizer.step 只在累积窗口结束时执行，不跨 episode 保留梯度。
+`update.json` 分别记录样本数、micro-batch 数和 optimizer steps。`sft.max_seq_tokens` 限制 prompt + 当前回答 + EOS 的总长：
+超限整条跳过并记录长度，不截断 action/EOS，也不删除要求的历史。
+原始默认值为 2048；对历史 207 个成功局的 2653 个有效交互进行长度检查后，2048 会排除
+755 条（28.5%），4096 只排除 7 条（0.26%），所以方法配置使用 4096。
+
+```bash
+uv run --locked --extra continual python -m alfworld.continual \
+  --config configs/continual-success-only-sft.yaml \
+  --device cuda:0 --output-dir runs/success-only-sft-seed42
+```
+
+`update.json` 保留每条完整样本的 messages、prompt、input_ids、labels、历史步骤编号、
+训练统计及拒绝原因；零有效样本不更新参数或模型版本。`task_type` 重置及事务 checkpoint
+与其他参数训练方法一致。
+
+长度审计和少量真实训练可单独执行，不改变已有实验 checkpoint：
+
+```bash
+.venv/bin/python scripts/pilot_success_only_sft.py \
+  --runs runs/continual-matrix-20261101T135608Z/history-ntp-assistant-success-stream-1 \
+  --output runs/sft-pilot/check.json --max-seq-tokens 4096 \
+  --train-samples 9 --batch-size 2 --gradient-accumulation-steps 4 \
+  --device cuda:0 --memory-gib 30
+```
+
+不传 `--train-samples` 时只加载本地 tokenizer 并统计长度，不加载模型。试跑结果仅验证样本构造
+和训练可执行性，不是新方法的 ALFWorld 成功率评测。
+
+旧版每条样本更新一次的 SFT 运行若要继续恢复，需显式设 `batch_size: 1` 和
+`gradient_accumulation_steps: 1`；直接改成新默认值会触发 resume 配置不一致保护。
