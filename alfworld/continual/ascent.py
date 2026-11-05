@@ -8,13 +8,18 @@ import time
 from .training import NTPTrainer
 
 
-def success_record(episode):
-    if not episode.outcome.get("success"):
-        raise ValueError("Cannot build a success record from an unsuccessful episode")
+def episode_goal(episode):
     initial = episode.steps[0]["observation"] if episode.steps else ""
     match = re.search(r"Your task is to\s*:?\s*([^\n]+)", initial, re.IGNORECASE)
     if not match:
-        raise ValueError("ASCENT could not extract the goal from the initial ALFWorld observation")
+        raise ValueError("Could not extract the goal from the initial ALFWorld observation")
+    return match[1].strip()
+
+
+def success_record(episode):
+    if not episode.outcome.get("success"):
+        raise ValueError("Cannot build a success record from an unsuccessful episode")
+    goal = episode_goal(episode)
     kept, removed, responses = [], [], []
     for step in episode.steps:
         valid = (step["format_error"] is None and step["executed_action"] is not None
@@ -22,7 +27,7 @@ def success_record(episode):
         (kept if valid else removed).append(step["step"])
         if valid:
             responses.append(f"{len(responses) + 1}. {step['raw_output']}")
-    text = (f"GOAL ACHIEVED: {match[1].strip()}\n"
+    text = (f"GOAL ACHIEVED: {goal}\n"
             "The task above was SOLVED by the following successful action sequence:\n"
             + "\n".join(responses)
             + "\nCondition on this successful outcome when choosing the next action.\n\n")
@@ -67,23 +72,34 @@ class AscentTrainer(NTPTrainer):
         return forward_kl_sum(head(student_hidden), teacher_logits)
 
     def train(self, steps, privileged_ids, context_limit):
+        """ASCENT uses the same full-trajectory record at every turn."""
+        return self.train_turns(steps, [privileged_ids] * len(steps), context_limit)
+
+    def train_turns(self, steps, privileged_ids_by_turn, context_limit):
+        """Shared Eq. 8 optimizer with an explicit privileged prefix for each turn.
+
+        TT-OPSD supplies different turn-local records. Keep episode-level gradient
+        accumulation here: calling train separately per turn changes the algorithm.
+        """
         import torch
         from torch.utils.checkpoint import checkpoint
         start = time.perf_counter()
         turns = []
+        if len(steps) != len(privileged_ids_by_turn):
+            raise ValueError("Privileged prefixes must align with every rollout turn")
         # Validate the entire episode before changing parameters or optimizer state.
-        for step in steps:
+        for step, privileged_ids in zip(steps, privileged_ids_by_turn):
             prompt, response = step["input_token_ids"], step["output_token_ids"]
             if not response:
                 continue
             if not prompt:
-                raise ValueError("ASCENT requires the exact nonempty rollout prefix")
+                raise ValueError("Distillation requires the exact nonempty rollout prefix")
             ids = prompt + response[:-1]
             if len(privileged_ids) + len(ids) > context_limit:
-                raise ValueError(f"ASCENT teacher context overflow at turn {step['step']}: "
+                raise ValueError(f"Distillation teacher context overflow at turn {step['step']}: "
                                  f"{len(privileged_ids) + len(ids)} > {context_limit}; "
-                                 "the rollout prefix and success record will not be truncated")
-            turns.append((step["step"], ids, len(response)))
+                                 "the rollout prefix and privileged record will not be truncated")
+            turns.append((step["step"], ids, len(response), privileged_ids))
         if not turns:
             return {"skipped": True, "skip_reason": "no_response_tokens", "optimizer_steps": 0,
                     "total_optimizer_steps": self.steps, "target_tokens": 0, "loss": None,
@@ -95,7 +111,7 @@ class AscentTrainer(NTPTrainer):
             for _ in range(self.config.optimizer_steps):
                 self.optimizer.zero_grad(set_to_none=True)
                 losses = []
-                for turn, ids, length in turns:
+                for turn, ids, length, privileged_ids in turns:
                     self.model.eval()
                     # Exit this context before the student's forward AND backward:
                     # checkpoint recomputation must see the trainable adapter.
@@ -112,7 +128,7 @@ class AscentTrainer(NTPTrainer):
                         )
                     loss = loss / length / len(turns)
                     if not torch.isfinite(loss):
-                        raise RuntimeError("Non-finite ASCENT KL; episode update not committed")
+                        raise RuntimeError("Non-finite distillation KL; episode update not committed")
                     loss.backward()
                     losses.append({"turn": turn, "target_tokens": length,
                                    "kl": loss.item() * len(turns)})
@@ -129,6 +145,6 @@ class AscentTrainer(NTPTrainer):
             self.model.config.use_cache = True
             self.model.eval()
         return {"skipped": False, "optimizer_steps": len(records), "total_optimizer_steps": self.steps,
-                "target_tokens": sum(length for _, _, length in turns), "training_turns": len(turns),
+                "target_tokens": sum(length for _, _, length, _ in turns), "training_turns": len(turns),
                 "updates": records, "loss": sum(r["loss"] for r in records) / len(records),
                 "seconds": time.perf_counter() - start}

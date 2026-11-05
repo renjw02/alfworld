@@ -1,0 +1,38 @@
+# TT-OPSD (paper Appendix B.2) under this repository's existing interaction protocol.
+# Use this config rather than changing only --method on the NTP config.
+method: tt-opsd
+action_mode: admissible
+max_steps: 50
+output_dir: runs/tt-opsd-shuffled-admissible
+checkpoint_interval: 10
+memory_scope: stream
+stream:
+  order: shuffled
+  seed: 42
+  task_order: [1, 2, 3, 4, 5, 6]
+  data_dir: ~/.cache/alfworld
+  split: valid_seen
+  manifest: null
+  limit: null
+model:
+  path: /data/jiawei/models/Qwen3.5-9B
+  device: cuda:0
+  devices: []
+  gpu_memory_gib: []
+  backend: hf
+  max_input_tokens: 65536
+  context_overflow: truncate_oldest
+  max_new_tokens: 1024
+# Shared optimizer settings: TT-OPSD matches ASCENT.
+ascent:
+  # Paper Appendix B.3: down_proj only, rank 16, scale 32, two steps.
+  rank: 16
+  alpha: 32
+  learning_rate: 0.00015
+  optimizer_steps: 2
+  # Implementation defaults where the paper does not specify a value.
+  dropout: 0.0
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  # Memory control only: full vocabulary, full prefix, unchanged objective.
+  logits_chunk_tokens: 32

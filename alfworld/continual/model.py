@@ -6,6 +6,7 @@ import time
 from .types import Generation
 from .training import NTPTrainer
 from .ascent import AscentTrainer, success_record
+from .tt_opsd import turn_records
 from .context import fit_context
 
 
@@ -91,9 +92,9 @@ class HFBackend:
                 free, _ = torch.cuda.mem_get_info(config.model.device)
                 if free < 24 * 1024**3:
                     raise RuntimeError("Less than 24 GiB GPU memory is free. No quantization or device fallback is applied.")
-            # Stage ASCENT weights on CPU only during loading, then install native
+            # Stage distillation weights on CPU only during loading, then install native
             # autograd-aware layer placement. No CPU/disk offload runs at training time.
-            native_parallel = config.is_ascent and bool(config.model.devices)
+            native_parallel = config.is_distillation and bool(config.model.devices)
             model, loading = Qwen3_5ForCausalLM.from_pretrained(
                 config.model.path, local_files_only=True, dtype=torch.bfloat16,
                 device_map={"": "cpu"} if native_parallel else device_map, output_loading_info=True,
@@ -103,7 +104,7 @@ class HFBackend:
             unexpected = loading.get("unexpected_keys", [])
             if any("visual" not in key and "vision" not in key and "mtp" not in key for key in unexpected):
                 raise RuntimeError(f"Unexpected language-model weights: {unexpected}")
-        if config.is_ascent and config.model.devices:
+        if config.is_distillation and config.model.devices:
             config.validate()
             architecture = getattr(model.config, "text_config", model.config)
             place_layers_for_training(model, layer_device_map(architecture.num_hidden_layers, config.model.devices))
@@ -112,18 +113,18 @@ class HFBackend:
         self.target_modules = []
         self.model.requires_grad_(False)
         if config.trains_parameters:
-            training = config.ascent if config.is_ascent else config.training
+            training = config.ascent if config.is_distillation else config.training
             from peft import LoraConfig, get_peft_model
             self.model = get_peft_model(model, LoraConfig(
                 task_type="CAUSAL_LM", r=training.rank,
                 lora_alpha=training.alpha, lora_dropout=training.dropout,
-                target_modules=["down_proj"] if config.is_ascent else "all-linear",
+                target_modules=["down_proj"] if config.is_distillation else "all-linear",
                 exclude_modules=["lm_head"], bias="none",
             ))
             self.target_modules = [name for name, module in self.model.named_modules() if hasattr(module, "lora_A")]
             if not self.target_modules:
                 raise RuntimeError("LoRA matched no modules")
-            self.trainer = (AscentTrainer(self.model, training) if config.is_ascent
+            self.trainer = (AscentTrainer(self.model, training) if config.is_distillation
                             else NTPTrainer(self.model, training))
         self.model.eval()
         self.model.config.use_cache = True
@@ -209,15 +210,28 @@ class HFBackend:
         return result
 
     def distill_episode(self, episode):
-        if not self.config.is_ascent or not episode.outcome.get("success"):
-            raise ValueError("ASCENT distillation requires a verified successful episode")
-        text, kept, removed = success_record(episode)
-        privileged_ids = self.tokenizer.encode(text, add_special_tokens=False)
+        if not self.config.is_distillation or not episode.outcome.get("success"):
+            raise ValueError("Distillation requires a verified successful episode")
         architecture = getattr(self.model.config, "text_config", self.model.config)
-        result = self.trainer.train(episode.steps, privileged_ids, architecture.max_position_embeddings)
-        result.update(kind="ascent", teacher_record=text, teacher_token_ids=privileged_ids,
-                      retained_turns=kept, filtered_turns=removed,
-                      loss_scope="all_generated_response_tokens_including_eos",
+        if self.config.is_tt_opsd:
+            records = turn_records(episode)
+            for record in records:
+                record["teacher_token_ids"] = self.tokenizer.encode(
+                    record["teacher_record"], add_special_tokens=False)
+            result = self.trainer.train_turns(
+                episode.steps, [r["teacher_token_ids"] for r in records],
+                architecture.max_position_embeddings,
+            )
+            result.update(kind="tt-opsd", teacher_records=records,
+                          privileged_scope="current_response_and_returned_observation",
+                          retained_turns=[s["step"] for s in episode.steps], filtered_turns=[])
+        else:
+            text, kept, removed = success_record(episode)
+            privileged_ids = self.tokenizer.encode(text, add_special_tokens=False)
+            result = self.trainer.train(episode.steps, privileged_ids, architecture.max_position_embeddings)
+            result.update(kind="ascent", teacher_record=text, teacher_token_ids=privileged_ids,
+                          retained_turns=kept, filtered_turns=removed)
+        result.update(loss_scope="all_generated_response_tokens_including_eos",
                       loss_reduction="mean_of_turn_token_means")
         return result
 
@@ -284,6 +298,18 @@ class MockBackend:
         return {"mock": True, "optimizer_steps": 0, "training_text": json.dumps(messages), "loss": None}
 
     def distill_episode(self, episode):
+        if not self.config.is_distillation or not episode.outcome.get("success"):
+            raise ValueError("Distillation requires a verified successful episode")
+        if self.config.is_tt_opsd:
+            records = turn_records(episode)
+            skipped = not any(s["output_token_ids"] for s in episode.steps)
+            if not skipped:
+                self.updates += 1
+            return {"kind": "tt-opsd", "mock": True, "optimizer_steps": 0, "loss": None,
+                    "teacher_records": records,
+                    "privileged_scope": "current_response_and_returned_observation",
+                    "retained_turns": [s["step"] for s in episode.steps], "filtered_turns": [],
+                    "seconds": 0.0, "skipped": skipped}
         text, kept, removed = success_record(episode)
         self.updates += 1
         return {"kind": "ascent", "mock": True, "optimizer_steps": 0, "loss": None,

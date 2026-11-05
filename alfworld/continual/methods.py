@@ -63,9 +63,10 @@ class Method:
                     "input_tokens": len(generation.input_ids), "output_tokens": len(generation.output_ids),
                     "generation_seconds": generation.seconds, "generation_truncated": generation.truncated,
                     "optimizer_steps": 0}
-        elif self.config.is_ascent:
+        elif self.config.is_distillation:
             if not episode.outcome["success"]:
-                return {"kind": "ascent", "skipped": True, "skip_reason": "unsuccessful_episode",
+                return {"kind": "tt-opsd" if self.config.is_tt_opsd else "ascent",
+                        "skipped": True, "skip_reason": "unsuccessful_episode",
                         "optimizer_steps": 0, "seconds": 0.0, "loss": None,
                         "version_before": self.version, "version_after": self.version}
             result = self.backend.distill_episode(episode)

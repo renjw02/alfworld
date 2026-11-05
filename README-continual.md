@@ -21,7 +21,7 @@ uv run --locked --extra continual python -m alfworld.continual \
 这只是最低检查，不代表长上下文或训练的显存保证；完整实验建议使用空闲 H100 80GB。
 默认超长输入按下文规则删除最旧历史并记录截断；显存不足、模型加载不完整时直接报错，不静默量化。
 
-推理方法及 `ascent`/`ascent-icl` 支持跨 GPU 按连续 decoder 层分配（不是张量并行，也不保证加速）。例如
+推理方法及 `ascent`/`ascent-icl`/`tt-opsd` 支持跨 GPU 按连续 decoder 层分配（不是张量并行，也不保证加速）。例如
 `--devices cuda:0 cuda:1 --gpu-memory-gib 32 24`，或在 `model.devices` 和
 `model.gpu_memory_gib` 中填写对应列表。设备编号相对于 `CUDA_VISIBLE_DEVICES`；
 模型的输入设备须为列表第一项。每卡实际分配上限取配置值与当时空闲显存减 3 GiB 的较小值。
@@ -29,7 +29,7 @@ uv run --locked --extra continual python -m alfworld.continual \
 模型层拆分可减少每卡权重和缓存，但单层长输入的临时张量仍可能导致 OOM，
 因此不能仅凭卡数保证目标上下文长度可运行。
 
-推理和 ASCENT 恢复时允许更改上述 GPU 布局，任务、窗口、解码和训练配置仍必须一致。
+推理、ASCENT 和 TT-OPSD 恢复时允许更改上述 GPU 布局，任务、窗口、解码和训练配置仍必须一致。
 每次启动的 `invocation.json` 和 `placement.json` 记录有效配置和实际层分布；
 旧的单卡 checkpoint 仍可恢复，多卡运行也保存各设备 RNG 状态。
 
@@ -56,6 +56,7 @@ Linux x86_64、Python 3.11+ 的 Torch/TorchVision 使用官方 CUDA 12.8 wheel �
 | `history-ntp-assistant-success` | 当前局完整历史 | 仅成功 episode，训练 assistant reasoning/action |
 | `ascent` | 当前局完整历史 | 仅成功 episode，冻结基座 teacher 提供 hindsight 分布，更新 LoRA |
 | `ascent-icl` | 最近 K−1 局 + 当前局完整历史 | 仅成功 episode 执行 ASCENT 更新；成功和失败局都保留到上下文窗口 |
+| `tt-opsd` | 当前局完整历史 | 仅成功 episode，teacher 逐轮接收任务、该轮回复及返回观察，更新 LoRA |
 
 `window_episodes` 默认 4，**包含当前局**；K=1 的 ICL 与 memoryless 输入一致。
 所有历史保留 reasoning、action、观察、分数、格式反馈和终局反馈。
@@ -259,6 +260,52 @@ LoRA 更新、恢复与 runner 集成。2026-11-02 执行以下套件，23 项�
 ```bash
 uv run --locked --extra continual python -m unittest discover -s tests -p 'test_continual*.py' -v
 ```
+
+## TT-OPSD
+
+依据 [论文 Section 4.1 和 Appendix B.2–B.3](https://arxiv.org/pdf/2610.05303)，
+TT-OPSD 是本文对 OPSD 的 test-time 改编。这里单独提供 `--method tt-opsd`：
+
+| 项目 | ASCENT | TT-OPSD |
+| --- | --- | --- |
+| teacher 的额外信息 | 整条成功轨迹的过滤后 reasoning/action | `z[i,t] = (任务, 本轮原始回复, 本轮返回观察)` |
+| 无效动作轮次的额外信息 | 从成功记录中过滤 | 保留本轮回复及失败反馈 |
+| 训练位置 | 全部非空回复，包括无效动作轮次 | 相同 |
+| 更新时机与目标 | episode 成功后，冻结初始 teacher，forward KL | 相同 |
+
+teacher 仍接收该轮 rollout 的原始 student 前缀（包含当时可见的历史），额外信息不含后续
+轮次或整局成功声明。训练先平均每轮的响应 token loss，再平均轮次；每个成功 episode
+累积全部轮次的梯度后执行 AdamW，一共两次。失败局不更新；不额外采样、不回放、不逐轮更新。
+LoRA 和优化器状态跨 episode 保留。
+
+```bash
+uv run --locked --extra continual python -m alfworld.continual \
+  --config configs/continual-tt-opsd.yaml \
+  --output-dir runs/tt-opsd-shuffled-admissible
+```
+
+比较 ASCENT 时可加 `--manifest <相同任务流的manifest.json>`，保持交互配置一致。
+TT-OPSD 共用 YAML 的 **`ascent:` 优化器配置块**，包括 `down_proj` LoRA、rank=16、alpha=32、
+lr=1.5e-4、`optimizer_steps=2`；`training:` 仍只供 NTP 使用。支持同样的多卡布局和 `--resume`。
+`update.json` 用 `kind: tt-opsd` 标识，`teacher_records` 按轮保存文本及其 token IDs，
+`retained_turns` 包含所有轮次，`filtered_turns` 为空。student 的精确 token 前缀保存在 `episode.json`。
+教师上下文超限会在任何更新前报错，不静默截断或跳过轮次。
+
+论文未给出 TT-OPSD 的具体文字模板，本实现用 Task / Current response / Returned observation
+包装上述三元组。沿用本仓库的 ReAct 格式和环境反馈：未解析出动作时环境没有执行，使用
+runner 实际返回的格式错误反馈，不把未变化的旧 observation 冒充动作反馈。
+其余未明确的超参数和 EOS 处理沿用上面的 ASCENT 实现假设；这不是论文成绩的复现声明。
+
+验证命令：
+
+```bash
+uv run --locked --extra continual python -m unittest discover -s tests -p 'test_continual*.py' -v
+```
+
+TT-OPSD 测试覆盖逐轮信息隔离、无效及格式错误反馈、原始 token 前缀、全词表 KL 与直接
+forward 的一致性、冻结 teacher、LoRA 更新、分块等价性、失败门控、空响应、更新前超限检查、
+优化器恢复和中断后重跑未提交 episode。模型计算测试使用 CPU 上的小型随机 Qwen3.5，
+runner 测试使用假环境；没有据此声称完成完整 9B benchmark 或多卡实测。
 
 ## ASCENT + ICL
 

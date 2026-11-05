@@ -134,9 +134,9 @@ def run_episode(config, entry, position, method, log, env_factory=TextEnvironmen
                           score=score, environment_done=bool(done), success=success,
                           episode_done=bool(done or success or step == config.max_steps))
             log.append(record)
-            # ASCENT reuses exact rollout tokens; other methods retain compact records.
+            # Distillation reuses exact rollout tokens; other methods retain compact records.
             episode.steps.append({k: v for k, v in record.items() if k not in
-                                  (("messages", "prompt") if config.is_ascent else
+                                  (("messages", "prompt") if config.is_distillation else
                                    ("messages", "prompt", "input_token_ids", "output_token_ids"))})
             if done or success:
                 break
@@ -170,7 +170,7 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             from .config import AscentConfig
             saved_config.setdefault("ascent", asdict(AscentConfig()))
             current_config = config.to_dict()
-            if not config.trains_parameters or config.is_ascent:
+            if not config.trains_parameters or config.is_distillation:
                 # Placement changes are recorded per invocation, not experiment semantics.
                 for key in ("device", "devices", "gpu_memory_gib"):
                     saved_config["model"][key] = current_config["model"][key]

@@ -6,7 +6,7 @@ import yaml
 
 NTP_METHODS = ("history-ntp", "history-ntp-assistant", "history-ntp-assistant-success")
 ASCENT_METHODS = ("ascent", "ascent-icl")
-METHODS = ("memoryless", "icl", "dc-cumulative", *NTP_METHODS, *ASCENT_METHODS)
+METHODS = ("memoryless", "icl", "dc-cumulative", *NTP_METHODS, *ASCENT_METHODS, "tt-opsd")
 
 
 @dataclass
@@ -24,7 +24,7 @@ class StreamConfig:
 class ModelConfig:
     path: str = "/data/jiawei/models/Qwen3.5-9B"
     device: str = "cuda:0"
-    devices: list[str] = field(default_factory=list)  # inference or ASCENT contiguous layer sharding
+    devices: list[str] = field(default_factory=list)  # inference or distillation layer sharding
     gpu_memory_gib: list[float] = field(default_factory=list)  # allocator caps per device
     max_input_tokens: int = 65536
     context_overflow: str = "truncate_oldest"
@@ -69,11 +69,19 @@ class Config:
     stream: StreamConfig = field(default_factory=StreamConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
-    ascent: AscentConfig = field(default_factory=AscentConfig)
+    ascent: AscentConfig = field(default_factory=AscentConfig)  # shared by ASCENT and TT-OPSD
 
     @property
     def trains_parameters(self):
-        return self.is_ntp or self.is_ascent
+        return self.is_ntp or self.is_distillation
+
+    @property
+    def is_tt_opsd(self):
+        return self.method == "tt-opsd"
+
+    @property
+    def is_distillation(self):
+        return self.is_ascent or self.is_tt_opsd
 
     @property
     def is_ascent(self):
@@ -111,8 +119,8 @@ class Config:
         if self.model.context_overflow not in ("truncate_oldest", "error"):
             raise ValueError("Unknown model.context_overflow policy")
         if self.model.devices:
-            if self.trains_parameters and not self.is_ascent:
-                raise ValueError("Multi-GPU layer sharding supports inference methods and ASCENT only")
+            if self.trains_parameters and not self.is_distillation:
+                raise ValueError("Multi-GPU layer sharding supports inference methods, ASCENT and TT-OPSD only")
             if (len(self.model.devices) < 2 or len(set(self.model.devices)) != len(self.model.devices)
                     or any(not isinstance(d, str) or not d.startswith("cuda:")
                            or not d[5:].isdigit() for d in self.model.devices)):
@@ -145,7 +153,7 @@ class Config:
             raise ValueError("learning_rate and max_grad_norm must be positive")
         if self.training.weight_decay < 0:
             raise ValueError("weight_decay must be nonnegative")
-        if self.is_ascent:
+        if self.is_distillation:
             a = self.ascent
             for name in ("rank", "alpha", "optimizer_steps", "logits_chunk_tokens"):
                 value = getattr(a, name)
@@ -156,9 +164,9 @@ class Config:
                 if not math.isfinite(getattr(a, name)):
                     raise ValueError(f"ascent.{name} must be finite")
             if a.learning_rate <= 0 or a.max_grad_norm <= 0 or a.weight_decay < 0:
-                raise ValueError("Invalid ASCENT optimizer configuration")
+                raise ValueError("Invalid ASCENT/TT-OPSD optimizer configuration")
             if a.dropout != 0:
-                raise ValueError("ASCENT requires dropout=0 for deterministic teacher/student matching")
+                raise ValueError("ASCENT/TT-OPSD requires dropout=0 for deterministic teacher/student matching")
         return self
 
     def to_dict(self):

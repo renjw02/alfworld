@@ -44,7 +44,7 @@ class ProtocolTests(unittest.TestCase):
         result = run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
         self.assertEqual(result["episodes"], 2)
         self.config.method = "history-ntp"
-        with self.assertRaisesRegex(ValueError, "inference methods and ASCENT only"):
+        with self.assertRaisesRegex(ValueError, "inference methods, ASCENT and TT-OPSD only"):
             self.config.validate()
 
     def setUp(self):
@@ -67,7 +67,79 @@ class ProtocolTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_ascent_runner_tokens_checkpoint_and_resume(self):
-        self.config.method = "ascent"
+        self.check_distillation_runner("ascent")
+
+    def test_tt_opsd_runner_tokens_checkpoint_and_resume(self):
+        self.check_distillation_runner("tt-opsd")
+
+    def test_tt_opsd_invalid_feedback_and_uncommitted_resume(self):
+        self.config.method = "tt-opsd"
+        self.config.max_steps = 3
+        self.config.stream.limit = 4
+        self.config.checkpoint_interval = 2
+        self.config.action_mode = "free"
+        seen = []
+
+        class Env(FakeEnv):
+            def step(self, action):
+                if action == "invented command":
+                    return "Nothing happens.", 0, False, {"admissible_commands": ["look"], "won": False}
+                return super().step(action)
+
+        class Backend(MockBackend):
+            def generate(self, messages, **kwargs):
+                turn = sum(m["role"] == "assistant" for m in messages)
+                text = ["malformed response", "Reasoning: try\nAction: invented command",
+                        "Reasoning: inspect\nAction: look"][turn]
+                prompt = json.dumps(messages)
+                return Generation(text, prompt, list(prompt.encode()), list(text.encode()), 0.0)
+
+            def distill_episode(self, episode):
+                seen.append((self.updates, copy.deepcopy(episode.steps)))
+                return super().distill_episode(episode)
+
+        class InterruptedBackend(Backend):
+            def generate(self, messages, **kwargs):
+                if self.updates == 3:
+                    raise RuntimeError("interrupt after uncommitted TT-OPSD update")
+                return super().generate(messages, **kwargs)
+
+        with self.assertRaisesRegex(RuntimeError, "uncommitted TT-OPSD"):
+            run(self.config, backend_factory=InterruptedBackend, env_factory=Env)
+        root = Path(self.config.output_dir)
+        state, rows = load_checkpoint(root)
+        self.assertEqual((state["next_position"], state["backend"]["updates"], len(rows)), (2, 2, 2))
+        self.assertEqual(state["method"]["history"], [])
+        uncommitted = seen[-1]
+        seen.clear()
+        run(self.config, resume=True, backend_factory=Backend, env_factory=Env)
+        self.assertEqual(seen[0][0], uncommitted[0])
+        for old, new in zip(uncommitted[1], seen[0][1]):
+            self.assertEqual(old["input_token_ids"], new["input_token_ids"])
+            self.assertEqual(old["output_token_ids"], new["output_token_ids"])
+        resumed, rows = load_checkpoint(root)
+        self.assertEqual(resumed["backend"]["updates"], 4)
+        for row in rows:
+            folder = root / row["attempt_dir"]
+            e = json.loads((folder / "episode.json").read_text())
+            update = json.loads((folder / "update.json").read_text())
+            self.assertEqual(e["outcome"]["environment_calls"], 2)
+            self.assertEqual(update["retained_turns"], [1, 2, 3])
+            records = update["teacher_records"]
+            self.assertIn("Format error:", records[0]["teacher_record"])
+            self.assertNotIn("Nothing happens.", records[0]["teacher_record"])
+            self.assertIn("invented command", records[1]["teacher_record"])
+            self.assertIn("Nothing happens.", records[1]["teacher_record"])
+            self.assertNotIn("Found it.", records[1]["teacher_record"])
+            self.assertIn("Found it.", records[2]["teacher_record"])
+        self.config.output_dir = str(self.root / "tt-opsd-baseline")
+        run(self.config, backend_factory=Backend, env_factory=Env)
+        baseline, _ = load_checkpoint(Path(self.config.output_dir))
+        self.assertEqual(resumed["method"], baseline["method"])
+        self.assertEqual(resumed["backend"], baseline["backend"])
+
+    def check_distillation_runner(self, method):
+        self.config.method = method
         self.config.checkpoint_interval = 1
         result = run(self.config, backend_factory=MockBackend, env_factory=FakeEnv)
         self.assertEqual(result["episodes"], 2)
@@ -81,7 +153,11 @@ class ProtocolTests(unittest.TestCase):
             self.assertTrue(ep["steps"][0]["input_token_ids"])
             self.assertTrue(ep["steps"][0]["output_token_ids"])
             self.assertTrue(update["mock"])
-            self.assertEqual(update["kind"], "ascent")
+            self.assertEqual(update["kind"], method)
+            if method == "tt-opsd":
+                self.assertEqual(update["filtered_turns"], [])
+                self.assertIn("Found it.", update["teacher_records"][0]["teacher_record"])
+                self.assertNotIn("teacher_record", update)
         run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
         resumed, _ = load_checkpoint(Path(self.config.output_dir))
         self.assertEqual(resumed["backend"], state["backend"])
