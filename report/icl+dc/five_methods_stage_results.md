@@ -1,6 +1,6 @@
 # 五种方法的阶段完成结果
 
-对应[五方法累计 reward 图](five_methods_seed42_stream.md)：ICL 2 次、DC 3 次、Memoryless/SFT 各 1 次。ASCENT 按用户指定改用两次阶段汇总（Run 1=89、Run 2=98），与此前单次 75/140 的数据不同。沿用 seed 42 / stream / task_blocked 的比较上下文，但用户汇总没有原始 config 或逐任务 ID 可供独立核验。
+对应[五方法累计 reward 图](five_methods_seed42_stream.md)：ICL 2 次、DC 3 次、Memoryless/SFT 各 1 次。ASCENT 使用两次本地完整 traces（Run 1=89、Run 2=98），替换此前单次 75/140 的数据。原始 config 已核对为 seed 42 / stream / task_blocked，逐任务 ID 与其他方法一致。
 
 ## 阶段成功率
 
@@ -17,22 +17,22 @@
 | 冷却后放置 | 18.50/25（74.0%） | 12.00/25（48.0%） | 4.00/25（16.0%） | 10.50/25（42.0%） | 3.00/25（12.0%） |
 | 双物体放置 | 11.50/24（47.9%） | 21.33/24（88.9%） | 16.00/24（66.7%） | 18.00/24（75.0%） | 10.00/24（41.7%） |
 
-表格中分子为每次运行平均完成任务数，分母为每次运行该阶段的任务数；均值可以是小数。其余方法的重复均为 seed 42。ASCENT 的两次运行信息以用户提供的阶段表为来源，不由汇总反推逐任务轨迹。
+表格中分子为每次运行平均完成任务数，分母为每次运行该阶段的任务数；均值可以是小数。所有重复均为 seed 42。ASCENT 的两次运行以 commit.json 选定的原始 episode traces 为来源。
 
 ## 阶段完成数量
 
 ![Completed tasks](five_methods_stage_completed_tasks.png)
 
-这张图直接显示各阶段平均完成了多少任务；各阶段值相加，分别等于原累计曲线终点：ICL 104.00、DC 110.33、Memoryless 78、ASCENT 93.5、SFT 65。其余方法逐运行验证累计 reward 差值；ASCENT 的各阶段直接取用户给定计数，累计图仅绘制阶段末点。
+这张图直接显示各阶段平均完成了多少任务；各阶段值相加，分别等于原累计曲线终点：ICL 104.00、DC 110.33、Memoryless 78、ASCENT 93.5、SFT 65。所有方法逐运行验证阶段成功数等于对应累计 reward 差值；ASCENT 同样使用逐任务真实结果。
 
 ## 文件与口径
 
 - [成功率 PNG](five_methods_stage_success_rate.png) / [PDF](five_methods_stage_success_rate.pdf) / [SVG](five_methods_stage_success_rate.svg)。
 - [完成数量 PNG](five_methods_stage_completed_tasks.png) / [PDF](five_methods_stage_completed_tasks.pdf) / [SVG](five_methods_stage_completed_tasks.svg)。
 - [阶段统计 CSV](five_methods_stage_results.csv) / [绘图脚本](plot_stage_bars.py)。
-- 运行 `python3 report/icl+dc/plot_stage_bars.py`，只需已提交的合并 CSV、provenance 与 `ascent_user_stage_results.json`，无需原始 runs/。
+- 运行 `python3 report/icl+dc/plot_stage_bars.py`，只需已提交的合并 CSV 与 provenance，无需原始 runs/。
 - 与原趋势图相同：不同方法来自不同批次、重复次数不同，这些柱状图描述现有结果，不构成控制所有变量的显著性或因果结论。
 
-其余方法 CSV SHA256：`2f0fb0be172e4f96d85e8ba716cf01eaa157df5b94c55e7c9b5c7fbe38ed164b`。
+五种方法 CSV SHA256：`459e5f1f52e4cf490ca50b003cc73f542da6626060d1506ec3b4e70b838400a2`。
 
-ASCENT 用户汇总 SHA256：`5d15b2f4023f11540b1d94e94a10ce3ad1acc71a5dd1d0e77e2b49aa69e525f2`。
+ASCENT 逐任务快照 SHA256：`2cdaae6394604969f4c0e69364298bf2f1b86a14309546a9ea6b89af26f42b6f`。
