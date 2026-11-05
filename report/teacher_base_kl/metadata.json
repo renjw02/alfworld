@@ -1,0 +1,16 @@
+{
+  "torch": "2.11.0+cu128",
+  "transformers": "5.22.1",
+  "device": "cuda:0",
+  "dtype": "bfloat16",
+  "logits_dtype": "float32",
+  "allocator_cap_gib": 4,
+  "model": "/data/jiawei/models/Qwen3.5-9B",
+  "temperature": 1,
+  "teacher": "frozen base + exact saved privileged tokens",
+  "base": "same frozen base without privileged tokens",
+  "selection": "first committed successful episode per task; first/middle/last turns; all first-episode turns for calibration; ICL first turn per observed task",
+  "units": "nats/token",
+  "truncation": false,
+  "linear_attention_memory": "Original 64-token delta-rule recurrence, segmented in groups of 2048; no token truncation"
+}
