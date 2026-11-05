@@ -29,14 +29,14 @@ def load_csv(path):
 def main():
     paths = [OUT/'cumulative_reward.csv', REPORT/'memoryless_and_ascent/instances.csv',
              REPORT/'memoryless_and_ascent/provenance.json', OUT/'success_only_sft_instances.csv',
-             OUT/'success_only_sft_training_snapshot.json']
+             OUT/'success_only_sft_training_snapshot.json', OUT/'ascent_user_stage_results.json']
     raw = defaultdict(list)
     for r in load_csv(paths[0]):
         if r['seed']=='42' and r['memory_scope']=='stream':
             raw[r['run']].append(dict(method=r['method'], task_index=int(r['task_index']),
                                       episode_id=r['episode_id'], task_type=r['task_type'], reward=float(r['reward'])))
     for r in load_csv(paths[1]):
-        if r['seed']=='42' and r['method'] in ('memoryless','ascent'):
+        if r['seed']=='42' and r['method']=='memoryless':
             raw[r['method']+'-seed42'].append(dict(method=r['method'],task_index=int(r['instance']),
                                                   episode_id=r['episode_id'],task_type=r['task_type'],reward=float(r['reward'])))
     for r in load_csv(paths[3]):
@@ -60,15 +60,30 @@ def main():
         groups[method].append({'run':name,'curve':cumulative})
         records.extend(dict(run=name, seed=42, memory_scope='stream', stream_order='task_blocked',
                             **r,cumulative_reward=float(cumulative[i])) for i,r in enumerate(rows,1))
-    assert {m:len(groups[m]) for m in ORDER}=={'icl':2,'dc-cumulative':3,'memoryless':1,'ascent':1,'success-only-sft':1}
+    supplied = json.loads(paths[5].read_text())
+    stage_lengths = [s['tasks_per_run'] for s in supplied['stages']]
+    assert stage_lengths == [35,13,27,16,25,24]
+    assert [s['task_type'] for s in supplied['stages']] == list(dict.fromkeys(r['task_type'] for r in reference))
+    for i in (1,2):
+        values = [s[f'run_{i}_successes'] for s in supplied['stages']]
+        assert all(0 <= v <= n for v,n in zip(values,stage_lengths))
+        groups['ascent'].append({'run':f'user-run-{i}', 'curve':np.r_[0,np.cumsum(values)]})
+    assert [r['curve'][-1] for r in groups['ascent']] == [89,98]
+    assert {m:len(groups[m]) for m in ORDER}=={'icl':2,'dc-cumulative':3,'memoryless':1,'ascent':2,'success-only-sft':1}
+    with (OUT/'ascent_stage_cumulative.csv').open('w',newline='') as f:
+        w=csv.writer(f,lineterminator='\n');w.writerow(['task_index','run_1_cumulative','run_2_cumulative','mean_cumulative'])
+        for j,x in enumerate(np.r_[0,np.cumsum(stage_lengths)]):
+            vals=[r['curve'][j] for r in groups['ascent']]
+            w.writerow([x,*vals,float(np.mean(vals))])
     with (OUT/'five_methods_seed42_stream.csv').open('w',newline='') as f:
         w=csv.DictWriter(f,fieldnames=list(records[0]),lineterminator='\n');w.writeheader();w.writerows(records)
     means={m:np.mean([r['curve'] for r in groups[m]],axis=0) for m in ORDER}
     provenance={'created_at_utc':datetime.now(timezone.utc).isoformat(),
                 'seed':42,'memory_scope':'stream','stream_order':'task_blocked',
-                'episode_id_and_task_order_match':True,'excluded':excluded,
+                'episode_id_and_task_order_match':{'verified_methods':[m for m in ORDER if m!='ascent'], 'ascent':'not verifiable from supplied stage aggregates'},'excluded':excluded,
+                'ascent_source':supplied,
                 'snapshot_sha256':{str(p.relative_to(REPORT)):hashlib.sha256(p.read_bytes()).hexdigest() for p in paths},
-                'memoryless_ascent_original_sources':{k:v for k,v in json.loads(paths[2].read_text()).items() if k.endswith('/42')},
+                'memoryless_ascent_original_sources':{k:v for k,v in json.loads(paths[2].read_text()).items() if k=='memoryless/42'},
                 'groups':{m:{'n':len(groups[m]),'runs':[r['run'] for r in groups[m]],
                              'final_rewards':[float(r['curve'][-1]) for r in groups[m]],
                              'mean_final_reward':float(means[m][-1])} for m in ORDER}}
@@ -87,10 +102,13 @@ def main():
         ax.text((a+b)/2,139,task_labels[i],ha='center',va='top',fontsize=10,color='#64748b')
     for method in ORDER:
         matrix=np.array([r['curve'] for r in groups[method]])
-        if len(matrix)>1:
+        if len(matrix)>1 and method!='ascent':
             ax.fill_between(np.arange(141),matrix.min(0),matrix.max(0),color=COLORS[method],alpha=.10,lw=0)
         label=f"{NAMES[method]} (n={len(matrix)})"
-        ax.plot(np.arange(141),means[method],label=label,color=COLORS[method],lw=2.5)
+        x=np.array(boundaries) if method=='ascent' else np.arange(141)
+        ax.plot(x,means[method],label=label,color=COLORS[method],lw=2.5,
+                marker='o' if method=='ascent' else None, markersize=4,
+                linestyle='--' if method=='ascent' else '-')
         last=means[method][-1]
         ax.scatter([140],[last],s=25,color=COLORS[method],zorder=5)
         dy={'icl':-15,'dc-cumulative':9,'memoryless':9,'ascent':-16,'success-only-sft':-12}[method]
@@ -101,7 +119,7 @@ def main():
     ax.grid(axis='y',color='#e2e8f0',lw=.7);ax.set_axisbelow(True)
     ax.legend(loc='upper left',bbox_to_anchor=(.015,.86),frameon=False)
     ax.set_title('ALFWorld: Cumulative reward across five methods\nSeed 42 | Memory scope: stream | Qwen3.5-9B',pad=19,fontsize=15)
-    fig.text(.5,.03,'Complete 140-task runs only. Lines: same-seed means; bands: min–max (not confidence intervals).',ha='center',fontsize=10,color='#475569')
+    fig.text(.5,.03,'ASCENT: supplied stage-end means; dashed connectors are not observed within-stage trajectories.\nOther methods: task-level means; bands: min-max (not confidence intervals).',ha='center',fontsize=10,color='#475569')
     fig.subplots_adjust(left=.09,right=.98,bottom=.14,top=.84)
     for ext in ('png','pdf','svg'):
         path=OUT/f'five_methods_seed42_stream.{ext}';fig.savefig(path,dpi=200,bbox_inches='tight')
@@ -110,7 +128,7 @@ def main():
     text=['# 五种方法的累计 reward：seed 42 / stream',
           '\n![五种方法趋势](five_methods_seed42_stream.png)',
           '\n补充：[各阶段完成结果柱状图](five_methods_stage_results.md)。',
-          '\n共同条件为 Qwen3.5-9B、valid_seen、seed 42、task_blocked、memory_scope=stream、admissible、最多 50 步。逐条核对五种方法的 episode ID 和 task_type，140 个任务的顺序完全一致。横轴为任务序号，纵轴为已完成任务的 reward 累积；reward 为 0/1，所以也等于累计成功任务数。',
+          '\n比较上下文为 Qwen3.5-9B、valid_seen、seed 42、task_blocked、memory_scope=stream、admissible、最多 50 步。ICL、DC、Memoryless、SFT 的 episode ID 和 task_type 已核对一致。ASCENT 改用用户提供的两次阶段汇总，没有逐任务轨迹；图中只在阶段末绘制汇总点，虚线仅连接阶段点，不表示阶段内真实趋势。横轴为任务序号，纵轴为已完成任务的 reward 累积；reward 为 0/1，所以也等于累计成功任务数。',
           '\n| 方法 | 完整运行数 | 各次最终 reward | 图中最终值 | 成功率 |\n|---|---:|---|---:|---:|']
     for m in ORDER:
         g=provenance['groups'][m]
@@ -118,11 +136,11 @@ def main():
     text+=['\n## SFT 更新数据来源',
            '\nSuccess-only SFT 的最终累计 reward 为 65（46.43%）。实际更新的 987 条样本中，简单放置占 32.93%，双物体占 19.66%，加热占 17.43%，三者合计 70.01%；冷却仅占 4.76%。[详细任务类型、目标 token 和 optimizer steps 分析](success_only_sft_training_sources.md)。',
            '\n## 选取口径',
-           '\n- ICL、DC 延续前一张图：只取 stream 的完整运行；同 seed 多次重复按每个任务位置求均值。阴影为这些重复的 min–max，不是置信区间。ICL repeat 1 只完成 69 局，被排除。\n- Memoryless、ASCENT 使用 `report/memoryless_and_ascent/instances.csv` 中 seed 42 的各 140 条记录；不混入 seed 43/44，也不使用本机旧 shuffled Memoryless 的 84/140 结果。\n- Success-only SFT 使用本机 GPU 2 单卡正式运行的 140 条已提交结果，batch_size=2、梯度累积=4、训练样本长度上限=4096、历史窗口为之前 5 次交互；没有把试跑或双卡诊断加入曲线。\n- Memoryless 的 stream 标签表示同一连续任务流；它本身不保存跨局记忆。\n- Memoryless 和 ASCENT 的原始运行目录当前不在本机，本图读取仓库内已有的逐实例快照和原始 commit 哈希；对其配置的描述依据已有来源报告，不能在本机重新核对完整原始 config。逐实例 reward 与任务顺序已从 CSV 独立验证。\n- 不同方法来自不同批次，未证明提示词、软件版本及所有其他设置完全相同。该图是现有结果趋势的对照，不是严格控制全部变量的多 seed 因果实验；n 不同也不能据此作显著性声明。',
+           '\n- ICL、DC 延续前一张图：只取 stream 的完整运行；同 seed 多次重复按每个任务位置求均值。阴影为这些重复的 min–max，不是置信区间。ICL repeat 1 只完成 69 局，被排除。\n- Memoryless 使用 `report/memoryless_and_ascent/instances.csv` 中 seed 42 的 140 条记录；不混入 seed 43/44 或 shuffled 结果。\n- ASCENT 使用用户提供的两次阶段汇总，成功总数分别为 89、98，平均 93.5（66.79%）；来源保存在 `ascent_user_stage_results.json`。未提供原始 config、episode ID 或局内顺序，不能独立验证这些信息，也不编造 140 条逐任务 reward。\n- Success-only SFT 使用本机 GPU 2 单卡正式运行的 140 条已提交结果，batch_size=2、梯度累积=4、训练样本长度上限=4096、历史窗口为之前 5 次交互；没有把试跑或双卡诊断加入曲线。\n- Memoryless 的 stream 标签表示同一连续任务流；它本身不保存跨局记忆。\n- Memoryless 的原始运行目录当前不在本机，读取仓库逐实例快照和原始 commit 哈希；对其配置的描述依据已有报告。ASCENT 为用户指定替换数据，其均值不是此前单次 75/140 的结果。\n- 不同方法来自不同批次，未证明提示词、软件版本及所有其他设置完全相同。该图是现有结果趋势的对照，不是严格控制全部变量的多 seed 因果实验；n 不同也不能据此作显著性声明。',
            '\n## 文件',
-           '\n- [PNG](five_methods_seed42_stream.png) / [PDF](five_methods_seed42_stream.pdf) / [SVG](five_methods_seed42_stream.svg)\n- [合并后的逐任务 CSV](five_methods_seed42_stream.csv)\n- [来源与哈希](five_methods_seed42_stream_provenance.json)\n- [生成脚本](plot_five_methods.py)：`python3 report/icl+dc/plot_five_methods.py`，仅依赖仓库内快照，无需原始 runs/。']
+           '\n- [PNG](five_methods_seed42_stream.png) / [PDF](five_methods_seed42_stream.pdf) / [SVG](five_methods_seed42_stream.svg)\n- [其余四种方法的逐任务 CSV](five_methods_seed42_stream.csv) / [ASCENT 阶段末累计数据](ascent_stage_cumulative.csv) / [ASCENT 用户提供的原始汇总](ascent_user_stage_results.json)\n- [来源与哈希](five_methods_seed42_stream_provenance.json)\n- [生成脚本](plot_five_methods.py)：`python3 report/icl+dc/plot_five_methods.py`，仅依赖仓库内快照，无需原始 runs/。']
     (OUT/'five_methods_seed42_stream.md').write_text('\n'.join(text)+'\n')
-    print(json.dumps(provenance['groups'],indent=2));print('Verified 1120 rewards and identical task order across 8 complete runs.')
+    print(json.dumps(provenance['groups'],indent=2));print('Verified 980 task-level rewards from 7 runs; ASCENT uses two supplied stage summaries, not fabricated task outcomes.')
 
 
 if __name__=='__main__':main()

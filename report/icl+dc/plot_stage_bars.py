@@ -36,10 +36,13 @@ def main():
         values.sort(key=lambda r:int(r['task_index']))
         assert [int(r['task_index']) for r in values]==list(range(1,141))
         assert sum(float(r['reward']) for r in values)==float(values[-1]['cumulative_reward'])
+    supplied=json.loads((OUT/'ascent_user_stage_results.json').read_text())
+    ascent={r['task_type']:r for r in supplied['stages']}
     stats=[]
     for method in METHODS:
         runs=[values for (m,_),values in by_run.items() if m==method]
-        assert len(runs)==provenance['groups'][method]['n']
+        n=2 if method=='ascent' else len(runs)
+        assert n==provenance['groups'][method]['n']
         for task,_,_,length in TASKS:
             totals=[]
             for values in runs:
@@ -50,9 +53,13 @@ def main():
                 before=float(values[start-2]['cumulative_reward']) if start>1 else 0
                 assert success==float(values[end-1]['cumulative_reward'])-before
                 totals.append(success)
-            stats.append(dict(method=method,task_type=task,runs=len(runs),tasks_per_run=length,
+            if method=='ascent':
+                supplied_row=ascent[task]
+                assert supplied_row['tasks_per_run']==length
+                totals=[supplied_row['run_1_successes'],supplied_row['run_2_successes']]
+            stats.append(dict(method=method,task_type=task,runs=n,tasks_per_run=length,
                               mean_completed=float(np.mean(totals)),mean_success_rate=float(np.mean(totals)/length),
-                              total_completed=sum(totals),total_tasks=length*len(runs),
+                              total_completed=sum(totals),total_tasks=length*n,
                               min_completed=min(totals),max_completed=max(totals)))
         assert np.isclose(sum(x['mean_completed'] for x in stats if x['method']==method),
                           provenance['groups'][method]['mean_final_reward'])
@@ -79,7 +86,7 @@ def main():
         fig.suptitle(('ALFWorld: Success rate by task stage' if rate else 'ALFWorld: Completed tasks by stage')+
                      '\nSeed 42 | Memory scope: stream | Qwen3.5-9B',fontsize=16,y=.99)
         fig.legend(*ax.get_legend_handles_labels(),loc='upper center',bbox_to_anchor=(.5,.89),ncol=5,frameon=False,fontsize=10)
-        fig.text(.5,.035,'Same complete runs as the cumulative-reward plot. Bars are same-seed means; n denotes runs.',
+        fig.text(.5,.035,'Bars: mean completion results; n denotes runs. ASCENT: two user-provided stage summaries.',
                  ha='center',fontsize=10,color='#475569')
         fig.subplots_adjust(left=.065,right=.985,top=.79,bottom=.19)
         stem='five_methods_stage_success_rate' if rate else 'five_methods_stage_completed_tasks'
@@ -88,7 +95,7 @@ def main():
             if ext=='svg':path.write_text('\n'.join(line.rstrip() for line in path.read_text().splitlines())+'\n')
         plt.close(fig)
     lines=['# 五种方法的阶段完成结果',
-           '\n与[五方法累计 reward 图](five_methods_seed42_stream.md)使用完全相同的数据：seed 42、stream、task_blocked，ICL 2 次、DC 3 次，其余各 1 次完整运行。',
+           '\n对应[五方法累计 reward 图](five_methods_seed42_stream.md)：ICL 2 次、DC 3 次、Memoryless/SFT 各 1 次。ASCENT 按用户指定改用两次阶段汇总（Run 1=89、Run 2=98），与此前单次 75/140 的数据不同。沿用 seed 42 / stream / task_blocked 的比较上下文，但用户汇总没有原始 config 或逐任务 ID 可供独立核验。',
            '\n## 阶段成功率',
            '\n![Stage success rate](five_methods_stage_success_rate.png)',
            '\n每组柱对应一个任务阶段；纵轴是该阶段的成功率，不是截至该阶段的累计成功率。阶段长度不同（35/13/27/16/25/24），所以成功率更适合跨阶段比较。图例与标注均为英文，n 为完整运行次数。',
@@ -99,15 +106,16 @@ def main():
             r=next(s for s in stats if s['method']==method and s['task_type']==task)
             cells.append(f"{r['mean_completed']:.2f}/{count}（{100*r['mean_success_rate']:.1f}%）")
         lines.append('| '+zh+' | '+' | '.join(cells)+' |')
-    lines+=['\n表格中分子为每次运行平均完成任务数，分母为每次运行该阶段的任务数；均值可以是小数。多次重复均为 seed 42，不是多 seed 均值。',
+    lines+=['\n表格中分子为每次运行平均完成任务数，分母为每次运行该阶段的任务数；均值可以是小数。其余方法的重复均为 seed 42。ASCENT 的两次运行信息以用户提供的阶段表为来源，不由汇总反推逐任务轨迹。',
             '\n## 阶段完成数量',
             '\n![Completed tasks](five_methods_stage_completed_tasks.png)',
-            '\n这张图直接显示各阶段平均完成了多少任务；各阶段值相加，分别等于原累计曲线终点：ICL 104.00、DC 110.33、Memoryless 78、ASCENT 75、SFT 65。脚本逐运行验证阶段完成数等于累计 reward 在该阶段首尾的差值。',
+            '\n这张图直接显示各阶段平均完成了多少任务；各阶段值相加，分别等于原累计曲线终点：ICL 104.00、DC 110.33、Memoryless 78、ASCENT 93.5、SFT 65。其余方法逐运行验证累计 reward 差值；ASCENT 的各阶段直接取用户给定计数，累计图仅绘制阶段末点。',
             '\n## 文件与口径',
-            '\n- [成功率 PNG](five_methods_stage_success_rate.png) / [PDF](five_methods_stage_success_rate.pdf) / [SVG](five_methods_stage_success_rate.svg)。\n- [完成数量 PNG](five_methods_stage_completed_tasks.png) / [PDF](five_methods_stage_completed_tasks.pdf) / [SVG](five_methods_stage_completed_tasks.svg)。\n- [阶段统计 CSV](five_methods_stage_results.csv) / [绘图脚本](plot_stage_bars.py)。\n- 运行 `python3 report/icl+dc/plot_stage_bars.py`，只需已提交的合并 CSV 与 provenance，无需原始 runs/。\n- 与原趋势图相同：不同方法来自不同批次、重复次数不同，这些柱状图描述现有结果，不构成控制所有变量的显著性或因果结论。',
-            f'\n源 CSV SHA256：`{hashlib.sha256(source.read_bytes()).hexdigest()}`。']
+            '\n- [成功率 PNG](five_methods_stage_success_rate.png) / [PDF](five_methods_stage_success_rate.pdf) / [SVG](five_methods_stage_success_rate.svg)。\n- [完成数量 PNG](five_methods_stage_completed_tasks.png) / [PDF](five_methods_stage_completed_tasks.pdf) / [SVG](five_methods_stage_completed_tasks.svg)。\n- [阶段统计 CSV](five_methods_stage_results.csv) / [绘图脚本](plot_stage_bars.py)。\n- 运行 `python3 report/icl+dc/plot_stage_bars.py`，只需已提交的合并 CSV、provenance 与 `ascent_user_stage_results.json`，无需原始 runs/。\n- 与原趋势图相同：不同方法来自不同批次、重复次数不同，这些柱状图描述现有结果，不构成控制所有变量的显著性或因果结论。',
+            f'\n其余方法 CSV SHA256：`{hashlib.sha256(source.read_bytes()).hexdigest()}`。',
+            f'\nASCENT 用户汇总 SHA256：`{hashlib.sha256((OUT/"ascent_user_stage_results.json").read_bytes()).hexdigest()}`。']
     (OUT/'five_methods_stage_results.md').write_text('\n'.join(lines)+'\n')
-    print('Validated 30 method-stage aggregates against all 8 complete runs and cumulative curve endpoints.')
+    print('Validated 30 method-stage aggregates: 7 task-level runs plus 2 user-supplied ASCENT stage summaries.')
 
 
 if __name__=='__main__':main()

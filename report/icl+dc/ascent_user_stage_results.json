@@ -1,0 +1,47 @@
+{
+  "source": "User-provided stage summary in conversation",
+  "configuration_context": "seed 42, stream, task_blocked comparison; original run configs and episode IDs not supplied",
+  "granularity": "stage aggregates only; no per-task outcomes supplied",
+  "run_names": [
+    "user-run-1",
+    "user-run-2"
+  ],
+  "stages": [
+    {
+      "task_type": "pick_and_place_simple",
+      "tasks_per_run": 35,
+      "run_1_successes": 34,
+      "run_2_successes": 34
+    },
+    {
+      "task_type": "look_at_obj_in_light",
+      "tasks_per_run": 13,
+      "run_1_successes": 10,
+      "run_2_successes": 12
+    },
+    {
+      "task_type": "pick_clean_then_place_in_recep",
+      "tasks_per_run": 27,
+      "run_1_successes": 18,
+      "run_2_successes": 13
+    },
+    {
+      "task_type": "pick_heat_then_place_in_recep",
+      "tasks_per_run": 16,
+      "run_1_successes": 4,
+      "run_2_successes": 5
+    },
+    {
+      "task_type": "pick_cool_then_place_in_recep",
+      "tasks_per_run": 25,
+      "run_1_successes": 9,
+      "run_2_successes": 12
+    },
+    {
+      "task_type": "pick_two_obj_and_place",
+      "tasks_per_run": 24,
+      "run_1_successes": 14,
+      "run_2_successes": 22
+    }
+  ]
+}
