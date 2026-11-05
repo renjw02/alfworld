@@ -27,7 +27,7 @@ def main():
     parser.add_argument("--cheatsheet-max-new-tokens", type=int,
                         help="DC curator output budget (default: 2048 tokens)")
     parser.add_argument("--device")
-    parser.add_argument("--devices", nargs="+", help="Inference layer sharding, e.g. cuda:0 cuda:1")
+    parser.add_argument("--devices", nargs="+", help="Inference or ASCENT layer sharding, e.g. cuda:0 cuda:1")
     parser.add_argument("--gpu-memory-gib", nargs="+", type=float,
                         help="Per-device PyTorch allocator caps for --devices")
     parser.add_argument("--backend", choices=["hf", "mock"])

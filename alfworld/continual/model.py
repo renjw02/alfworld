@@ -20,6 +20,46 @@ def layer_device_map(num_layers, devices):
     return mapping
 
 
+def place_layers_for_training(model, device_map):
+    """Use autograd-preserving transfers, with all parameters resident on GPUs.
+
+    Unlike Accelerate's inference/offload hooks, these pre-hooks execute normally
+    during forward and gradient-checkpoint recomputation. Hybrid caches stay as
+    objects; each layer initializes its own cache tensors on its local device.
+    """
+    import torch
+    from functools import partial
+
+    def move(value, device):
+        if isinstance(value, torch.Tensor):
+            return value.to(device)
+        if isinstance(value, tuple):
+            return tuple(move(item, device) for item in value)
+        if isinstance(value, list):
+            return [move(item, device) for item in value]
+        if isinstance(value, dict):
+            return {key: move(item, device) for key, item in value.items()}
+        return value
+
+    def move_inputs(module, args, kwargs, *, device):
+        return move(args, device), move(kwargs, device)
+
+    if hasattr(model, "_training_placement_hooks"):
+        raise ValueError("Training placement has already been installed")
+    if any(not str(device).startswith("cuda:") for device in device_map.values()):
+        raise ValueError("Training layer placement requires explicit CUDA devices")
+    handles = []
+    for name, device in device_map.items():
+        module = model.get_submodule(name)
+        module.to(device)
+        handles.append(module.register_forward_pre_hook(
+            partial(move_inputs, device=device), with_kwargs=True,
+        ))
+    model._training_placement_hooks = handles
+    model.hf_device_map = dict(device_map)
+    return model
+
+
 class HFBackend:
     def __init__(self, config, model=None, tokenizer=None):
         import torch
@@ -51,15 +91,22 @@ class HFBackend:
                 free, _ = torch.cuda.mem_get_info(config.model.device)
                 if free < 24 * 1024**3:
                     raise RuntimeError("Less than 24 GiB GPU memory is free. No quantization or device fallback is applied.")
+            # Stage ASCENT weights on CPU only during loading, then install native
+            # autograd-aware layer placement. No CPU/disk offload runs at training time.
+            native_parallel = config.is_ascent and bool(config.model.devices)
             model, loading = Qwen3_5ForCausalLM.from_pretrained(
                 config.model.path, local_files_only=True, dtype=torch.bfloat16,
-                device_map=device_map, output_loading_info=True,
+                device_map={"": "cpu"} if native_parallel else device_map, output_loading_info=True,
             )
             if loading.get("missing_keys") or loading.get("mismatched_keys") or loading.get("error_msgs"):
                 raise RuntimeError(f"Incomplete model load: {loading}")
             unexpected = loading.get("unexpected_keys", [])
             if any("visual" not in key and "vision" not in key and "mtp" not in key for key in unexpected):
                 raise RuntimeError(f"Unexpected language-model weights: {unexpected}")
+        if config.is_ascent and config.model.devices:
+            config.validate()
+            architecture = getattr(model.config, "text_config", model.config)
+            place_layers_for_training(model, layer_device_map(architecture.num_hidden_layers, config.model.devices))
         self.model = model
         self.trainer = None
         self.target_modules = []

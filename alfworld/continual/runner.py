@@ -26,7 +26,7 @@ def seed_all(seed, config):
         import torch
         torch.manual_seed(seed)
         if torch.cuda.is_available():
-            torch.cuda.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
 
 
 def rng_state(config):
@@ -49,8 +49,11 @@ def restore_rng(state, config):
         torch.set_rng_state(state["torch"])
         if "cuda" in state:
             torch.cuda.set_rng_state(state["cuda"], config.model.device)
-        for device, value in state.get("cuda_devices", {}).items():
-            if device in config.model.devices:
+        for device in config.model.devices:
+            # Single-GPU checkpoints predate cuda_devices. Initialize added cards
+            # from the saved primary state; preserve per-device states when present.
+            value = state.get("cuda_devices", {}).get(device, state.get("cuda"))
+            if value is not None:
                 torch.cuda.set_rng_state(value, device)
 
 
@@ -167,7 +170,7 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             from .config import AscentConfig
             saved_config.setdefault("ascent", asdict(AscentConfig()))
             current_config = config.to_dict()
-            if not config.trains_parameters:
+            if not config.trains_parameters or config.is_ascent:
                 # Placement changes are recorded per invocation, not experiment semantics.
                 for key in ("device", "devices", "gpu_memory_gib"):
                     saved_config["model"][key] = current_config["model"][key]

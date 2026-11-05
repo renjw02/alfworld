@@ -24,7 +24,7 @@ class StreamConfig:
 class ModelConfig:
     path: str = "/data/jiawei/models/Qwen3.5-9B"
     device: str = "cuda:0"
-    devices: list[str] = field(default_factory=list)  # optional contiguous layer sharding
+    devices: list[str] = field(default_factory=list)  # inference or ASCENT contiguous layer sharding
     gpu_memory_gib: list[float] = field(default_factory=list)  # allocator caps per device
     max_input_tokens: int = 65536
     context_overflow: str = "truncate_oldest"
@@ -111,8 +111,8 @@ class Config:
         if self.model.context_overflow not in ("truncate_oldest", "error"):
             raise ValueError("Unknown model.context_overflow policy")
         if self.model.devices:
-            if self.trains_parameters:
-                raise ValueError("Multi-GPU layer sharding is supported for inference methods only")
+            if self.trains_parameters and not self.is_ascent:
+                raise ValueError("Multi-GPU layer sharding supports inference methods and ASCENT only")
             if (len(self.model.devices) < 2 or len(set(self.model.devices)) != len(self.model.devices)
                     or any(not isinstance(d, str) or not d.startswith("cuda:")
                            or not d[5:].isdigit() for d in self.model.devices)):

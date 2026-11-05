@@ -21,7 +21,7 @@ uv run --locked --extra continual python -m alfworld.continual \
 这只是最低检查，不代表长上下文或训练的显存保证；完整实验建议使用空闲 H100 80GB。
 默认超长输入按下文规则删除最旧历史并记录截断；显存不足、模型加载不完整时直接报错，不静默量化。
 
-推理方法支持跨 GPU 按连续 decoder 层分配（不是张量并行，也不保证加速）。例如
+推理方法及 `ascent`/`ascent-icl` 支持跨 GPU 按连续 decoder 层分配（不是张量并行，也不保证加速）。例如
 `--devices cuda:0 cuda:1 --gpu-memory-gib 32 24`，或在 `model.devices` 和
 `model.gpu_memory_gib` 中填写对应列表。设备编号相对于 `CUDA_VISIBLE_DEVICES`；
 模型的输入设备须为列表第一项。每卡实际分配上限取配置值与当时空闲显存减 3 GiB 的较小值。
@@ -29,7 +29,7 @@ uv run --locked --extra continual python -m alfworld.continual \
 模型层拆分可减少每卡权重和缓存，但单层长输入的临时张量仍可能导致 OOM，
 因此不能仅凭卡数保证目标上下文长度可运行。
 
-推理恢复时允许更改上述 GPU 布局，任务、窗口和解码配置仍必须一致。
+推理和 ASCENT 恢复时允许更改上述 GPU 布局，任务、窗口、解码和训练配置仍必须一致。
 每次启动的 `invocation.json` 和 `placement.json` 记录有效配置和实际层分布；
 旧的单卡 checkpoint 仍可恢复，多卡运行也保存各设备 RNG 状态。
 
@@ -237,8 +237,14 @@ uv run --locked --extra continual python -m alfworld.continual \
 teacher/student 共享基座权重；decoder 开启 gradient checkpointing，输出头和 KL 按
 `ascent.logits_chunk_tokens`（默认 32）个响应位置进行 checkpointed 分块计算。
 每块仍计算完整词表，不使用 top-k 或 2048-token 历史切块。该参数只控制输出头计算的显存，
-不能保证长前缀训练不 OOM。当前仅支持单卡训练。
+不能保证长前缀训练不 OOM。可通过 `--devices` 将 decoder 层分配到多张 GPU。
 若 teacher 成功记录加完整前缀超过模型位置上限，更新前报错，不静默删减上下文或跳过该局。
+
+ASCENT 多卡训练使用 PyTorch 可求导的设备间拷贝和层输入 hooks，支持梯度 checkpoint 重计算；
+不使用 Accelerate 的推理卸载 hooks。权重加载时暂存 CPU，运行时各层常驻对应 GPU。
+仅响应位置的 hidden states 传到输出头所在卡计算 KL；梯度裁剪覆盖所有卡上的 LoRA 参数。
+单卡 checkpoint 中的 LoRA 和 AdamW 状态可恢复到新布局，新增设备的 RNG 从已存主卡状态初始化；
+后续 checkpoint 保存每张卡的 RNG。改变布局可能改变浮点运算结果，不保证与单卡轨迹逐位相同。
 
 ASCENT 复用训练方法的 checkpoint 提交和恢复语义：每 10 局、最终局、按类别重置模式的
 类别末尾保存；恢复时回滚至已提交边界。`memory_scope: task_type` 是附加对照，论文式
@@ -273,7 +279,15 @@ uv run --locked --extra continual python -m alfworld.continual \
   --output-dir runs/ascent-icl-task-blocked-admissible
 ```
 
-该组合仍只支持单卡训练，默认学习率、LoRA 设置、每个成功局的两次更新与 ASCENT 相同。
+该组合支持单卡或多卡分层训练，默认学习率、LoRA 设置、每个成功局的两次更新与 ASCENT 相同。
+例如六卡运行时加 `--devices cuda:0 cuda:1 cuda:2 cuda:3 cuda:4 cuda:5`。
+
+多卡梯度、teacher 冻结、生成及单卡优化器 checkpoint 迁移验证（至少两张空闲卡）：
+
+```bash
+CUDA_VISIBLE_DEVICES=2,3 ALFWORLD_TEST_MULTIGPU=1 \
+  uv run --locked --extra continual python -m unittest discover -s tests -p test_continual_multigpu.py -v
+```
 
 ## 日志、分析和恢复
 

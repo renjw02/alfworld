@@ -44,7 +44,7 @@ class ProtocolTests(unittest.TestCase):
         result = run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
         self.assertEqual(result["episodes"], 2)
         self.config.method = "history-ntp"
-        with self.assertRaisesRegex(ValueError, "inference methods only"):
+        with self.assertRaisesRegex(ValueError, "inference methods and ASCENT only"):
             self.config.validate()
 
     def setUp(self):
@@ -85,6 +85,22 @@ class ProtocolTests(unittest.TestCase):
         run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
         resumed, _ = load_checkpoint(Path(self.config.output_dir))
         self.assertEqual(resumed["backend"], state["backend"])
+
+    def test_ascent_resume_changes_only_device_placement(self):
+        self.config.method = "ascent-icl"
+        run(self.config, backend_factory=MockBackend, env_factory=FakeEnv)
+        root = Path(self.config.output_dir)
+        before, rows = load_checkpoint(root)
+        self.config.model.devices = ["cuda:0", "cuda:1"]
+        self.config.model.gpu_memory_gib = [70, 70]
+        run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
+        after, resumed_rows = load_checkpoint(root)
+        self.assertEqual(before["backend"], after["backend"])
+        self.assertEqual(before["method"], after["method"])
+        self.assertEqual(rows, resumed_rows)
+        self.config.window_episodes += 1
+        with self.assertRaisesRegex(ValueError, "Resume configuration differs"):
+            run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
 
     def test_default_config(self):
         config = load_config("configs/continual.yaml").validate()

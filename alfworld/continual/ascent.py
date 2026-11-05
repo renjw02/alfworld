@@ -54,7 +54,10 @@ class AscentTrainer(NTPTrainer):
         hidden = decoder(input_ids=inputs, attention_mask=torch.ones_like(inputs),
                          use_cache=False, return_dict=True).last_hidden_state
         # Input is prompt + response[:-1]. The last L states predict all L tokens.
-        return hidden[:, -response_length:, :]
+        # Only transfer response states to the output-head device. Tensor.to keeps
+        # the student's gradient path across devices and checkpoint recomputation.
+        head_device = self.model.get_base_model().get_output_embeddings().weight.device
+        return hidden[:, -response_length:, :].to(head_device)
 
     def _block_loss(self, student_hidden, teacher_hidden):
         head = self.model.get_base_model().get_output_embeddings()
