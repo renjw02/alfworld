@@ -94,6 +94,7 @@ done
 | `ascent` | 当前局完整历史 | 仅成功 episode，冻结基座 teacher 提供 hindsight 分布，更新 LoRA |
 | `ascent-icl` | 最近 K−1 局 + 当前局完整历史 | 仅成功 episode 执行 ASCENT 更新；成功和失败局都保留到上下文窗口 |
 | `tt-opsd` | 当前局完整历史 | 仅成功 episode，teacher 逐轮接收任务、该轮回复及返回观察，更新 LoRA |
+| `sft` | 当前局完整历史 | 成功和失败局均以整条轨迹训练，屏蔽无效回复，默认更新 LoRA 两次 |
 
 `window_episodes` 默认 4，**包含当前局**；K=1 的 ICL 与 memoryless 输入一致。
 所有历史保留 reasoning、action、观察、分数、格式反馈和终局反馈。
@@ -475,6 +476,45 @@ NTP 更新也是模拟的。真正的参数更新由小型 Qwen3.5 测试验证�
 模块职责：`stream/environment` 管理任务与环境；`prompting/types` 管理 ReAct 和轨迹；
 `methods` 管理跨局状态；`model/training` 管理生成和 NTP；`runner` 调度；
 `logging/analysis` 负责可恢复日志和离线指标。所有代码在 `alfworld/continual/`。
+
+## 整轨迹 SFT：交错 mask，每局更新两次
+
+`sft` 在每个 episode 完成评估后训练，包括成功和失败局。推理使用当前局完整历史，
+跨 episode 只保留 LoRA 参数，不加入过去局的 ICL 历史。
+整条轨迹通过同一聊天模板序列化一次，系统提示、observation、反馈、终局结果、
+消息头和无效回复的 labels 都为 `-100`；只有有效回复的完整 reasoning/action 和结束 EOS
+是监督目标。mask 不删除输入，后续有效回复仍能利用无效动作和反馈；因果注意力阻止未来信息泄漏。
+
+有效性沿用 `success-only-sft` 的严格筛选：排除格式错误或截断、未执行或非 admissible 动作；
+对未报告成功的步骤，还排除 `Nothing happens.` 和 observation 未变化。
+含聊天控制 token 的回复也不作为监督目标。被排除步骤的 reasoning/action 一起 mask。
+这里的“有效”只表示通过交互筛选，不保证 reasoning 正确或动作有助于最终成功。
+
+每局对同一序列、同一 labels 执行 `sft.optimizer_steps: 2` 次完整前向、反向和 AdamW 更新。
+第二次使用第一次更新后的参数重新计算梯度，不重新采样轨迹，也不复用梯度。
+loss 对整条轨迹所有有效目标 token 等权平均，所以较长回复占更大权重。
+没有有效目标时不更新参数和模型版本。`update.json` 保存完整训练序列及 labels、
+有效步骤、剔除原因、目标 token 区间，以及两次更新各自的 loss 和全局 optimizer step。
+模型版本按有更新的 episode 递增一次，optimizer step 默认每局递增两次。
+
+默认 LoRA 为 `all-linear`（排除 `lm_head`），rank=16、alpha=32、dropout=0、学习率 `1e-5`。
+`sft.batch_size`、`sft.gradient_accumulation_steps`、`sft.history_interactions` 和
+`training.chunk_tokens` 不用于此方法。`sft.logits_chunk_tokens: 32` 只控制词表投影的
+显存占用：decoder 每次仍处理完整轨迹，所有有效目标的梯度合并后只执行一次 optimizer step。
+
+专用配置固定 heat&place 的 39 个任务、seed=42、每局最多 50 步，默认单 GPU：
+
+```bash
+.venv/bin/python -m alfworld.continual \
+  --config configs/continual-sft.yaml \
+  --device cuda:0 --output-dir runs/heat-place-sft-seed42
+```
+
+完整历史要求 `model.context_overflow: error`；默认输入预算 64512、生成预算 1024，
+整条训练序列（包括模板和终局消息）上限 65536，且不超过模型上下文上限。
+超限明确报错，不切块、不静默截断、不删除历史。保留失败尝试日志，可在排查后重新运行。
+使用相同配置加 `--resume` 从已提交的 episode 边界恢复；默认每 10 局和结束时保存参数状态。
+原 `success-only-sft` 的成功门控、五次交互历史、minibatch 语义保持不变。
 
 ## Success-only SFT：按交互构造训练样本
 

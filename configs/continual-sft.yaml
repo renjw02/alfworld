@@ -1,0 +1,31 @@
+# Full-trajectory online SFT from both successful and unsuccessful episodes.
+method: sft
+action_mode: admissible
+max_steps: 50
+output_dir: runs/heat-place-sft-seed42
+checkpoint_interval: 10
+memory_scope: stream
+stream:
+  order: shuffled
+  seed: 42
+  split: valid_heat_place
+  data_dir: ~/.cache/alfworld
+  manifest: configs/manifests/valid_heat_place.seed42.json
+model:
+  path: /data/jiawei/models/Qwen3.5-9B
+  device: cuda:0
+  backend: hf
+  max_input_tokens: 64512
+  max_new_tokens: 1024
+  context_overflow: error
+sft:
+  max_seq_tokens: 65536
+  optimizer_steps: 2
+  logits_chunk_tokens: 32  # head memory control; the decoder always sees the full trajectory
+training:
+  rank: 16
+  alpha: 32
+  dropout: 0.0
+  learning_rate: 0.00001
+  weight_decay: 0.0
+  max_grad_norm: 1.0

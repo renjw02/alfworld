@@ -147,7 +147,7 @@ def run_episode(config, entry, position, method, log, env_factory=TextEnvironmen
             log.append(record)
             # Preserve both conditioning prefixes and exact generated response tokens.
             episode.steps.append({k: v for k, v in record.items() if k not in
-                                  (("messages", "prompt", "training_messages", "training_prompt") if config.is_distillation else
+                                  (("messages", "prompt", "training_messages", "training_prompt") if config.is_distillation or config.method == "sft" else
                                    ("messages", "prompt", "input_token_ids", "output_token_ids"))})
             if done or success:
                 break
@@ -186,6 +186,8 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             old_sft = saved_config.get("method") == "success-only-sft"
             saved_config["sft"].setdefault("batch_size", 1 if old_sft else SFTConfig().batch_size)
             saved_config["sft"].setdefault("gradient_accumulation_steps", 1 if old_sft else SFTConfig().gradient_accumulation_steps)
+            saved_config["sft"].setdefault("optimizer_steps", SFTConfig().optimizer_steps)
+            saved_config["sft"].setdefault("logits_chunk_tokens", SFTConfig().logits_chunk_tokens)
             current_config = config.to_dict()
             if not config.trains_parameters or config.is_distillation:
                 # Placement changes are recorded per invocation, not experiment semantics.

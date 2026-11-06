@@ -8,6 +8,7 @@ from .training import NTPTrainer
 from .ascent import AscentTrainer, success_record, current_episode_training_steps
 from .tt_opsd import turn_records
 from .sft import SFTTrainer, build_samples
+from .trajectory_sft import TrajectorySFTTrainer, build_trajectory
 from .context import fit_context
 
 
@@ -126,6 +127,8 @@ class HFBackend:
             if not self.target_modules:
                 raise RuntimeError("LoRA matched no modules")
             self.trainer = (AscentTrainer(self.model, training) if config.is_distillation
+                            else TrajectorySFTTrainer(self.model, training, config.sft)
+                            if config.method == "sft"
                             else SFTTrainer(self.model, training, config.sft,
                                             self.tokenizer.pad_token_id or self.tokenizer.eos_token_id)
                             if config.method == "success-only-sft"
@@ -219,6 +222,15 @@ class HFBackend:
         return result
 
     def sft_episode(self, episode):
+        if self.config.method == "sft":
+            architecture = getattr(self.model.config, "text_config", self.model.config)
+            sample = build_trajectory(self.config, episode, self._render, self.tokenizer,
+                                      architecture.max_position_embeddings)
+            result = self.trainer.train_trajectory(sample)
+            result.update(kind="sft", trajectory=sample,
+                          loss_scope="valid_response_tokens_including_eos",
+                          loss_reduction="mean_over_valid_tokens")
+            return result
         if self.config.method != "success-only-sft":
             raise ValueError("SFT requested for another method")
         samples, rejected = build_samples(self.config, episode, self.serialize, self.tokenizer)
@@ -329,6 +341,20 @@ class MockBackend:
 
     def sft_episode(self, episode):
         from .sft import interaction_error
+        if self.config.method == "sft":
+            retained, rejected = [], []
+            for step in episode.steps:
+                error = interaction_error(step)
+                if error:
+                    rejected.append({"step": step["step"], "reason": error})
+                else:
+                    retained.append(step["step"])
+            if retained:
+                self.updates += self.config.sft.optimizer_steps
+            return {"kind": "sft", "mock": True, "optimizer_steps": 0,
+                    "simulated_optimizer_steps": self.config.sft.optimizer_steps if retained else 0,
+                    "skipped": not bool(retained), "skip_reason": None if retained else "no_valid_targets",
+                    "retained_steps": retained, "rejected": rejected, "loss": None}
         retained = [s["step"] for s in episode.steps if interaction_error(s) is None] if episode.outcome.get("success") else []
         if retained:
             self.updates += 1
