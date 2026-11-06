@@ -1,6 +1,7 @@
 # ALFWorld streaming continual learning
 
-本框架比较跨 episode 更新 **context** 与更新 **LoRA 参数**。数据来自 `valid_seen`，
+本框架比较跨 episode 更新 **context** 与更新 **LoRA 参数**。默认数据来自 `valid_seen`，
+也支持 `valid_unseen` 和合并 seen/unseen 的 `valid_heat_place` 子集，
 结果是在线适应（streaming adaptation）结果，不是冻结模型的标准验证成绩。
 初始实验使用本地 `/data/jiawei/models/Qwen3.5-9B`，仅运行 ALFWorld 文本环境。
 
@@ -44,6 +45,42 @@ Linux x86_64、Python 3.11+ 的 Torch/TorchVision 使用官方 CUDA 12.8 wheel �
 底层 Qwen3.5 线性注意力在没有可选优化 kernel 时使用正确但较慢的 PyTorch 实现。
 当前实现优先验证实验语义，没有自动安装 `flash-linear-attention` 或 `causal-conv1d`。
 
+## Heat&place 专用子集（seen + unseen）
+
+`valid_heat_place` 合并 `valid_seen` 的 **16** 个和 `valid_unseen` 的 **23** 个
+`pick_heat_then_place_in_recep` 游戏，共 **39** 个。它是逻辑合并，直接加载原始游戏，
+无需复制数据或创建软链接；沿用 solvable、非 Sliced/非 movable 等原有筛选规则。
+每个 episode ID 带来源 split 前缀，manifest 的 `source_split` 保留 seen/unseen 来源。
+先合并再按 seed 打乱，跨来源持续保留历史、cheatsheet 或 LoRA。
+
+统一配置为 `configs/continual-heat-place.yaml`，固定清单为
+`configs/manifests/valid_heat_place.seed42.json`。清单包含相对数据路径和 SHA-256，
+三种方法使用同样的 39 个任务和 seed=42 顺序。仓库根目录下运行：
+
+```bash
+for method in icl dc-cumulative ascent; do
+  .venv/bin/python -m alfworld.continual \
+    --config configs/continual-heat-place.yaml \
+    --method "$method" --device cuda:0 \
+    --output-dir "runs/heat-place-${method}-seed42"
+done
+```
+
+`--data-dir` 或 `ALFWORLD_DATA` 可指定包含 `json_2.1.1/` 的数据目录。
+默认每种方法都从基座重新开始；运行中断后用相同命令加 `--resume`。
+要换 seed/order，可将配置的 `stream.manifest` 设为 `null` 自动生成新顺序，
+或在其他现有配置上添加 `--split valid_heat_place --seed <seed>`。
+该别名要求 seen/unseen 两个来源均存在，不会在缺失一个来源时静默运行缩小的数据集。
+
+只检查数据、环境和流程而不加载模型，可在单种方法命令后添加
+`--backend mock --max-steps 1`，并使用独立输出目录。Mock 不验证真实模型训练或效果。
+
+**失败轨迹研究的当前边界：** ICL 保留失败局历史，DC 的 curator 也接收失败局及其结果；
+当前 Ascent 遇到失败局会记录 `skip_reason: unsuccessful_episode`，只有成功局才更新参数。
+因此三者可以直接运行在此子集上，但当前 Ascent 是成功轨迹学习对照，
+若要让它从失败轨迹更新参数，仍需单独定义并实现新的学习目标。
+合并后的成绩是混合 seen/unseen 的在线适应结果，不是标准 unseen 泛化成绩。
+
 ## 方法和交互协议
 
 | 方法 | 每步输入 | 局后更新 |
@@ -57,6 +94,7 @@ Linux x86_64、Python 3.11+ 的 Torch/TorchVision 使用官方 CUDA 12.8 wheel �
 | `ascent` | 当前局完整历史 | 仅成功 episode，冻结基座 teacher 提供 hindsight 分布，更新 LoRA |
 | `ascent-icl` | 最近 K−1 局 + 当前局完整历史 | 仅成功 episode 执行 ASCENT 更新；成功和失败局都保留到上下文窗口 |
 | `tt-opsd` | 当前局完整历史 | 仅成功 episode，teacher 逐轮接收任务、该轮回复及返回观察，更新 LoRA |
+| `sft` | 当前局完整历史 | 成功和失败局均以整条轨迹训练，屏蔽无效回复，默认更新 LoRA 两次 |
 
 `window_episodes` 默认 4，**包含当前局**；K=1 的 ICL 与 memoryless 输入一致。
 
@@ -321,10 +359,19 @@ runner 测试使用假环境；没有据此声称完成完整 9B benchmark 或�
 使用 `memory_scope: stream` 时，LoRA、优化器和上下文窗口都跨任务 block 延续。
 窗口仍受输入 token 预算约束，沿用 `truncate_oldest` 规则。
 
-蒸馏使用当前局 rollout 当时保存的精确前缀，其中包含实际送入模型的 ICL 历史；
-loss 仅覆盖当前局生成的响应 token。历史 episode 是条件上下文，不重新作为训练目标回放。
+ICL 仅用于推理。每步额外构造训练前缀：system prompt + 当前局截至该步之前的对话，
+不包含其他 episode，也不包含当前回复或后续反馈。它使用与普通 ASCENT 推理相同的
+chat template、输入预算和截断规则。student 和 teacher 的训练输入都使用这个局内前缀；
 teacher 仍为关闭 LoRA 的冻结基座，并额外接收当前成功局的成功记录。
+训练目标保持为 ICL 推理实际生成的回复 token（含 EOS），不重新生成或重新编码回复。
+loss 仍只覆盖当前局回复，原有成功门控、KL、LoRA 和每局两次更新不变。
+
+`steps.jsonl` 分别保存推理的 `input_token_ids` 和训练的 `training_input_token_ids`、
+`training_messages`、`training_prompt`、`training_input_truncation`；`episode.json` 保留两套前缀 IDs。
+`update.json` 标记 `training_context_scope: current_episode` 并记录各轮训练前缀长度。
 checkpoint 同时保存历史窗口、LoRA 和优化器，恢复时一并回到已提交边界。
+新版 metadata 标记 `ascent_icl_training_context: current_episode_v1`。
+旧版把 ICL 历史带入训练的运行必须从初始模型重跑；禁止用新版续接旧 checkpoint 混合实验语义。
 
 ```bash
 uv run --locked --extra continual python -m alfworld.continual \
@@ -436,6 +483,45 @@ NTP 更新也是模拟的。真正的参数更新由小型 Qwen3.5 测试验证�
 模块职责：`stream/environment` 管理任务与环境；`prompting/types` 管理 ReAct 和轨迹；
 `methods` 管理跨局状态；`model/training` 管理生成和 NTP；`runner` 调度；
 `logging/analysis` 负责可恢复日志和离线指标。所有代码在 `alfworld/continual/`。
+
+## 整轨迹 SFT：交错 mask，每局更新两次
+
+`sft` 在每个 episode 完成评估后训练，包括成功和失败局。推理使用当前局完整历史，
+跨 episode 只保留 LoRA 参数，不加入过去局的 ICL 历史。
+整条轨迹通过同一聊天模板序列化一次，系统提示、observation、反馈、终局结果、
+消息头和无效回复的 labels 都为 `-100`；只有有效回复的完整 reasoning/action 和结束 EOS
+是监督目标。mask 不删除输入，后续有效回复仍能利用无效动作和反馈；因果注意力阻止未来信息泄漏。
+
+有效性沿用 `success-only-sft` 的严格筛选：排除格式错误或截断、未执行或非 admissible 动作；
+对未报告成功的步骤，还排除 `Nothing happens.` 和 observation 未变化。
+含聊天控制 token 的回复也不作为监督目标。被排除步骤的 reasoning/action 一起 mask。
+这里的“有效”只表示通过交互筛选，不保证 reasoning 正确或动作有助于最终成功。
+
+每局对同一序列、同一 labels 执行 `sft.optimizer_steps: 2` 次完整前向、反向和 AdamW 更新。
+第二次使用第一次更新后的参数重新计算梯度，不重新采样轨迹，也不复用梯度。
+loss 对整条轨迹所有有效目标 token 等权平均，所以较长回复占更大权重。
+没有有效目标时不更新参数和模型版本。`update.json` 保存完整训练序列及 labels、
+有效步骤、剔除原因、目标 token 区间，以及两次更新各自的 loss 和全局 optimizer step。
+模型版本按有更新的 episode 递增一次，optimizer step 默认每局递增两次。
+
+默认 LoRA 为 `all-linear`（排除 `lm_head`），rank=16、alpha=32、dropout=0、学习率 `1e-5`。
+`sft.batch_size`、`sft.gradient_accumulation_steps`、`sft.history_interactions` 和
+`training.chunk_tokens` 不用于此方法。`sft.logits_chunk_tokens: 32` 只控制词表投影的
+显存占用：decoder 每次仍处理完整轨迹，所有有效目标的梯度合并后只执行一次 optimizer step。
+
+专用配置固定 heat&place 的 39 个任务、seed=42、每局最多 50 步，默认单 GPU：
+
+```bash
+.venv/bin/python -m alfworld.continual \
+  --config configs/continual-sft.yaml \
+  --device cuda:0 --output-dir runs/heat-place-sft-seed42
+```
+
+完整历史要求 `model.context_overflow: error`；默认输入预算 64512、生成预算 1024，
+整条训练序列（包括模板和终局消息）上限 65536，且不超过模型上下文上限。
+超限明确报错，不切块、不静默截断、不删除历史。保留失败尝试日志，可在排查后重新运行。
+使用相同配置加 `--resume` 从已提交的 episode 边界恢复；默认每 10 局和结束时保存参数状态。
+原 `success-only-sft` 的成功门控、五次交互历史、minibatch 语义保持不变。
 
 ## Success-only SFT：按交互构造训练样本
 

@@ -1,5 +1,6 @@
 """Sequential evaluate-then-update protocol with transactional episode commits."""
 from datetime import datetime, timezone
+import copy
 import importlib.metadata
 import json
 from pathlib import Path
@@ -57,7 +58,7 @@ def restore_rng(state, config):
                 torch.cuda.set_rng_state(value, device)
 
 
-def metadata():
+def metadata(split="valid_seen"):
     packages = {}
     for name in ("alfworld", "textworld", "torch", "transformers", "peft", "numpy"):
         try:
@@ -70,7 +71,8 @@ def metadata():
     except (OSError, subprocess.CalledProcessError):
         commit, dirty = None, None
     return {"git_commit": commit, "git_dirty": dirty, "packages": packages,
-            "python": sys.version, "protocol": "valid_seen_streaming_adaptation"}
+            "python": sys.version, "protocol": f"{split}_streaming_adaptation",
+            "ascent_icl_training_context": "current_episode_v1"}
 
 
 def run_episode(config, entry, position, method, log, env_factory=TextEnvironment):
@@ -107,6 +109,15 @@ def run_episode(config, entry, position, method, log, env_factory=TextEnvironmen
                       "executed_action": None, "admissible_commands": prior_commands,
                       "invalid_action": parsed.error is None and parsed.action not in prior_commands,
                       "generation_seconds": generated.seconds}
+            if config.method == "ascent-icl":
+                # Capture before appending this response or feedback: no prior
+                # episodes or future turns may enter the training prefix.
+                local_context = [system_message(config.action_mode), *episode.messages]
+                local_messages, local_prompt, local_ids, local_truncation = method.backend.prepare_input(local_context)
+                record.update(training_context_scope="current_episode",
+                              training_messages=copy.deepcopy(local_messages), training_prompt=local_prompt,
+                              training_input_token_ids=local_ids, training_input_tokens=len(local_ids),
+                              training_input_truncation=local_truncation)
             # If env.step fails, preserve the generated reasoning/action as well as its input.
             write_json(log.path / "last_generation.json", record)
             # Keep raw model output, including malformed output, as the training target.
@@ -134,9 +145,9 @@ def run_episode(config, entry, position, method, log, env_factory=TextEnvironmen
                           score=score, environment_done=bool(done), success=success,
                           episode_done=bool(done or success or step == config.max_steps))
             log.append(record)
-            # Distillation reuses exact rollout tokens; other methods retain compact records.
+            # Preserve both conditioning prefixes and exact generated response tokens.
             episode.steps.append({k: v for k, v in record.items() if k not in
-                                  (("messages", "prompt") if config.is_distillation else
+                                  (("messages", "prompt", "training_messages", "training_prompt") if config.is_distillation or config.method == "sft" else
                                    ("messages", "prompt", "input_token_ids", "output_token_ids"))})
             if done or success:
                 break
@@ -176,6 +187,8 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             old_sft = saved_config.get("method") == "success-only-sft"
             saved_config["sft"].setdefault("batch_size", 1 if old_sft else SFTConfig().batch_size)
             saved_config["sft"].setdefault("gradient_accumulation_steps", 1 if old_sft else SFTConfig().gradient_accumulation_steps)
+            saved_config["sft"].setdefault("optimizer_steps", SFTConfig().optimizer_steps)
+            saved_config["sft"].setdefault("logits_chunk_tokens", SFTConfig().logits_chunk_tokens)
             current_config = config.to_dict()
             if not config.trains_parameters or config.is_distillation:
                 # Placement changes are recorded per invocation, not experiment semantics.
@@ -184,6 +197,9 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             if saved_config != current_config:
                 raise ValueError("Resume configuration differs from the saved configuration")
             saved_metadata = json.loads((root / "metadata.json").read_text())
+            if (config.method == "ascent-icl"
+                    and saved_metadata.get("ascent_icl_training_context") != "current_episode_v1"):
+                raise ValueError("ASCENT+ICL training context changed; start a new run instead of resuming a legacy checkpoint")
             if saved_metadata["packages"] != metadata()["packages"]:
                 raise ValueError("Installed package versions changed since the original run")
             manifest = validate_manifest(json.loads((root / "manifest.json").read_text()), config.stream)
@@ -195,14 +211,14 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             manifest = prepare_manifest(config.stream)
             write_json(root / "manifest.json", manifest)
             write_json(root / "config.json", config.to_dict())
-            write_json(root / "metadata.json", metadata())
+            write_json(root / "metadata.json", metadata(config.stream.split))
         # Keep all traces from one invocation together, including resumed attempts.
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
         trace_root = root / "traces" / stamp
         trace_root.mkdir(parents=True, exist_ok=False)
         write_json(trace_root / "invocation.json", {
             "started_at_utc": stamp, "resume": resume, "config": config.to_dict(),
-            "metadata": metadata(), "system_message": system_message(config.action_mode),
+            "metadata": metadata(config.stream.split), "system_message": system_message(config.action_mode),
         })
         print(f"Execution traces: {trace_root}", flush=True)
         seed_all(config.stream.seed, config)

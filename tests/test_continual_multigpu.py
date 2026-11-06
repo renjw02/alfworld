@@ -49,7 +49,8 @@ class MultiGPUAscentTests(unittest.TestCase):
             e.steps.append(dict(step=turn, observation="Your task is to: find a mug.",
                                 format_error=None, executed_action="look", action="look",
                                 admissible_commands=["look"], raw_output="Reasoning: inspect\nAction: look",
-                                input_token_ids=[20, 21, 22, 3, 4, 5], output_token_ids=response))
+                                input_token_ids=[20, 21, 22, 3, 4, 5],
+                                training_input_token_ids=[3, 4, 5], output_token_ids=response))
         before = parallel.state_dict()
         with parallel.model.disable_adapter(), torch.no_grad():
             teacher_before = parallel.trainer._response_hidden([10, 11, 3, 4, 5], 2).clone()

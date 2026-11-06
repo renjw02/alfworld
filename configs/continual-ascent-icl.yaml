@@ -1,4 +1,4 @@
-# ASCENT parameter updates plus a rolling ICL episode window.
+# ICL only for rollout; ASCENT training conditions on the current episode alone.
 method: ascent-icl
 action_mode: admissible
 window_episodes: 4

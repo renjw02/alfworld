@@ -6,7 +6,8 @@ import yaml
 
 NTP_METHODS = ("history-ntp", "history-ntp-assistant", "history-ntp-assistant-success")
 ASCENT_METHODS = ("ascent", "ascent-icl")
-METHODS = ("memoryless", "icl", "dc-cumulative", *NTP_METHODS, *ASCENT_METHODS, "tt-opsd", "success-only-sft")
+METHODS = ("memoryless", "icl", "dc-cumulative", *NTP_METHODS, *ASCENT_METHODS, "tt-opsd", "success-only-sft", "sft")
+STREAM_SPLITS = ("valid_seen", "valid_unseen", "valid_heat_place")
 
 
 @dataclass
@@ -62,6 +63,8 @@ class SFTConfig:
     history_interactions: int = 5
     batch_size: int = 2
     gradient_accumulation_steps: int = 4
+    optimizer_steps: int = 2  # whole-trajectory sft only
+    logits_chunk_tokens: int = 32  # vocabulary projection only; never split the context
 
 
 @dataclass
@@ -83,7 +86,7 @@ class Config:
 
     @property
     def trains_parameters(self):
-        return self.is_ntp or self.is_distillation or self.method == "success-only-sft"
+        return self.is_ntp or self.is_distillation or self.method in ("success-only-sft", "sft")
 
     @property
     def is_tt_opsd(self):
@@ -122,14 +125,16 @@ class Config:
             raise ValueError("Unknown memory_scope")
         if self.memory_scope == "task_type" and self.stream.order != "task_blocked":
             raise ValueError("task_type memory_scope requires task_blocked order")
-        if self.stream.split != "valid_seen":
-            raise ValueError("This protocol uses valid_seen")
+        if self.stream.split not in STREAM_SPLITS:
+            raise ValueError(f"stream.split must be one of {STREAM_SPLITS}")
         if sorted(self.stream.task_order) != list(range(1, 7)):
             raise ValueError("task_order must be a permutation of 1..6")
         if self.model.backend not in ("hf", "mock"):
             raise ValueError("Unknown model backend")
         if self.model.context_overflow not in ("truncate_oldest", "error"):
             raise ValueError("Unknown model.context_overflow policy")
+        if self.method == "sft" and self.model.context_overflow != "error":
+            raise ValueError("Whole-trajectory sft requires model.context_overflow=error")
         if self.model.devices:
             if self.trains_parameters and not self.is_distillation:
                 raise ValueError("Multi-GPU layer sharding supports inference methods, ASCENT and TT-OPSD only")
@@ -166,7 +171,8 @@ class Config:
         if self.training.weight_decay < 0:
             raise ValueError("weight_decay must be nonnegative")
         for name, minimum in (("max_seq_tokens", 2), ("history_interactions", 0),
-                              ("batch_size", 1), ("gradient_accumulation_steps", 1)):
+                              ("batch_size", 1), ("gradient_accumulation_steps", 1),
+                              ("optimizer_steps", 1), ("logits_chunk_tokens", 1)):
             value = getattr(self.sft, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
                 raise ValueError(f"sft.{name} must be an integer >= {minimum}")

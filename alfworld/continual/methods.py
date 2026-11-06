@@ -81,13 +81,13 @@ class Method:
                     "input_tokens": len(generation.input_ids), "output_tokens": len(generation.output_ids),
                     "generation_seconds": generation.seconds, "generation_truncated": generation.truncated,
                     "optimizer_steps": 0}
-        elif self.config.is_distillation or self.config.method == "success-only-sft":
-            if not episode.outcome["success"]:
+        elif self.config.is_distillation or self.config.method in ("success-only-sft", "sft"):
+            if self.config.method != "sft" and not episode.outcome["success"]:
                 return {"kind": "ascent" if self.config.is_ascent else self.config.method,
                         "skipped": True, "skip_reason": "unsuccessful_episode",
                         "optimizer_steps": 0, "seconds": 0.0, "loss": None,
                         "version_before": self.version, "version_after": self.version}
-            result = (self.backend.sft_episode(episode) if self.config.method == "success-only-sft"
+            result = (self.backend.sft_episode(episode) if self.config.method in ("success-only-sft", "sft")
                       else self.backend.distill_episode(episode))
             result["version_before"] = self.version
             if not result.get("skipped", False):
