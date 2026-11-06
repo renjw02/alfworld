@@ -1,7 +1,7 @@
 """ASCENT protocol and tiny real-model tests; no downloaded weights required."""
 import copy
 import unittest
-from alfworld.continual.ascent import success_record, forward_kl_sum
+from alfworld.continual.ascent import success_record, forward_kl_sum, current_episode_training_steps
 from alfworld.continual.config import Config, load_config
 from alfworld.continual.methods import Method
 from alfworld.continual.model import HFBackend, MockBackend
@@ -14,11 +14,24 @@ def episode():
         e.steps.append(dict(step=i, observation="Room description.\nYour task is to: find a mug.",
                             format_error=None, executed_action=action, action=action,
                             admissible_commands=["look"], raw_output=f"Reasoning: inspect\nAction: {action}",
-                            input_token_ids=[3, 4, 5], output_token_ids=[6, 7, 2] if i == 1 else [8, 2]))
+                            input_token_ids=[3, 4, 5], training_input_token_ids=[3, 4, 5],
+                            output_token_ids=[6, 7, 2] if i == 1 else [8, 2]))
     return e
 
 
 class AscentProtocolTests(unittest.TestCase):
+    def test_local_prefix_preserves_responses_and_rejects_legacy_steps(self):
+        e = episode()
+        e.steps[0]["input_token_ids"] = [20, 21, 22, 3, 4, 5]
+        original = copy.deepcopy(e.steps)
+        selected = current_episode_training_steps(e)
+        self.assertEqual(selected[0]["input_token_ids"], [3, 4, 5])
+        self.assertEqual(selected[0]["output_token_ids"], original[0]["output_token_ids"])
+        self.assertEqual(e.steps, original)
+        del e.steps[0]["training_input_token_ids"]
+        with self.assertRaisesRegex(ValueError, "restart legacy runs"):
+            current_episode_training_steps(e)
+
     def test_icl_history_success_gate_window_and_scope(self):
         config = load_config("configs/continual-ascent-icl.yaml").validate()
         self.assertTrue(config.is_ascent and config.uses_icl and config.trains_parameters)
@@ -138,6 +151,10 @@ class AscentModelTests(unittest.TestCase):
         self.assertTrue(all("down_proj" in name for name in backend.target_modules))
         trainer = backend.trainer
         e, z = episode(), [10, 11]
+        if config.uses_icl:
+            for step in e.steps:
+                step["input_token_ids"] = [20, 21, 22] + step["input_token_ids"]
+        training_steps = current_episode_training_steps(e) if config.uses_icl else e.steps
         original = copy.deepcopy(e.steps)
         before = {name: p.detach().clone() for name, p in backend.model.named_parameters()}
         with backend.model.disable_adapter(), torch.no_grad():
@@ -163,21 +180,21 @@ class AscentModelTests(unittest.TestCase):
         # Different head chunking must preserve the full objective and update.
         backend.load_state_dict(initial)
         config.ascent.logits_chunk_tokens = 32
-        repeated = trainer.train(e.steps, z, 4096)
+        repeated = trainer.train(training_steps, z, 4096)
         for key, value in final["adapter"].items():
             torch.testing.assert_close(value, backend.state_dict()["adapter"][key], rtol=1e-4, atol=1e-6)
         self.assertAlmostEqual(result["loss"], repeated["loss"], places=5)
         # Exact replay from an optimizer checkpoint (beyond initial empty state).
         backend.load_state_dict(final)
-        trainer.train(e.steps, z, 4096)
+        trainer.train(training_steps, z, 4096)
         continued = copy.deepcopy(backend.state_dict())
         backend.load_state_dict(final)
-        trainer.train(e.steps, z, 4096)
+        trainer.train(training_steps, z, 4096)
         for key, value in continued["adapter"].items():
             torch.testing.assert_close(value, backend.state_dict()["adapter"][key], rtol=0, atol=0)
         steps_before = trainer.steps
         with self.assertRaisesRegex(ValueError, "context overflow"):
-            trainer.train(e.steps, z, 2)
+            trainer.train(training_steps, z, 2)
         self.assertEqual(trainer.steps, steps_before)
         self.assertFalse(backend.model.training)
         self.assertTrue(backend.model.config.use_cache)

@@ -1,5 +1,6 @@
 """Sequential evaluate-then-update protocol with transactional episode commits."""
 from datetime import datetime, timezone
+import copy
 import importlib.metadata
 import json
 from pathlib import Path
@@ -70,7 +71,8 @@ def metadata():
     except (OSError, subprocess.CalledProcessError):
         commit, dirty = None, None
     return {"git_commit": commit, "git_dirty": dirty, "packages": packages,
-            "python": sys.version, "protocol": "valid_seen_streaming_adaptation"}
+            "python": sys.version, "protocol": "valid_seen_streaming_adaptation",
+            "ascent_icl_training_context": "current_episode_v1"}
 
 
 def run_episode(config, entry, position, method, log, env_factory=TextEnvironment):
@@ -107,6 +109,15 @@ def run_episode(config, entry, position, method, log, env_factory=TextEnvironmen
                       "executed_action": None, "admissible_commands": prior_commands,
                       "invalid_action": parsed.error is None and parsed.action not in prior_commands,
                       "generation_seconds": generated.seconds}
+            if config.method == "ascent-icl":
+                # Capture before appending this response or feedback: no prior
+                # episodes or future turns may enter the training prefix.
+                local_context = [system_message(config.action_mode), *episode.messages]
+                local_messages, local_prompt, local_ids, local_truncation = method.backend.prepare_input(local_context)
+                record.update(training_context_scope="current_episode",
+                              training_messages=copy.deepcopy(local_messages), training_prompt=local_prompt,
+                              training_input_token_ids=local_ids, training_input_tokens=len(local_ids),
+                              training_input_truncation=local_truncation)
             # If env.step fails, preserve the generated reasoning/action as well as its input.
             write_json(log.path / "last_generation.json", record)
             # Keep raw model output, including malformed output, as the training target.
@@ -134,9 +145,9 @@ def run_episode(config, entry, position, method, log, env_factory=TextEnvironmen
                           score=score, environment_done=bool(done), success=success,
                           episode_done=bool(done or success or step == config.max_steps))
             log.append(record)
-            # Distillation reuses exact rollout tokens; other methods retain compact records.
+            # Preserve both conditioning prefixes and exact generated response tokens.
             episode.steps.append({k: v for k, v in record.items() if k not in
-                                  (("messages", "prompt") if config.is_distillation else
+                                  (("messages", "prompt", "training_messages", "training_prompt") if config.is_distillation else
                                    ("messages", "prompt", "input_token_ids", "output_token_ids"))})
             if done or success:
                 break
@@ -183,6 +194,9 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             if saved_config != current_config:
                 raise ValueError("Resume configuration differs from the saved configuration")
             saved_metadata = json.loads((root / "metadata.json").read_text())
+            if (config.method == "ascent-icl"
+                    and saved_metadata.get("ascent_icl_training_context") != "current_episode_v1"):
+                raise ValueError("ASCENT+ICL training context changed; start a new run instead of resuming a legacy checkpoint")
             if saved_metadata["packages"] != metadata()["packages"]:
                 raise ValueError("Installed package versions changed since the original run")
             manifest = validate_manifest(json.loads((root / "manifest.json").read_text()), config.stream)

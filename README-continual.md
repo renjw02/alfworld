@@ -314,10 +314,19 @@ runner 测试使用假环境；没有据此声称完成完整 9B benchmark 或�
 使用 `memory_scope: stream` 时，LoRA、优化器和上下文窗口都跨任务 block 延续。
 窗口仍受输入 token 预算约束，沿用 `truncate_oldest` 规则。
 
-蒸馏使用当前局 rollout 当时保存的精确前缀，其中包含实际送入模型的 ICL 历史；
-loss 仅覆盖当前局生成的响应 token。历史 episode 是条件上下文，不重新作为训练目标回放。
+ICL 仅用于推理。每步额外构造训练前缀：system prompt + 当前局截至该步之前的对话，
+不包含其他 episode，也不包含当前回复或后续反馈。它使用与普通 ASCENT 推理相同的
+chat template、输入预算和截断规则。student 和 teacher 的训练输入都使用这个局内前缀；
 teacher 仍为关闭 LoRA 的冻结基座，并额外接收当前成功局的成功记录。
+训练目标保持为 ICL 推理实际生成的回复 token（含 EOS），不重新生成或重新编码回复。
+loss 仍只覆盖当前局回复，原有成功门控、KL、LoRA 和每局两次更新不变。
+
+`steps.jsonl` 分别保存推理的 `input_token_ids` 和训练的 `training_input_token_ids`、
+`training_messages`、`training_prompt`、`training_input_truncation`；`episode.json` 保留两套前缀 IDs。
+`update.json` 标记 `training_context_scope: current_episode` 并记录各轮训练前缀长度。
 checkpoint 同时保存历史窗口、LoRA 和优化器，恢复时一并回到已提交边界。
+新版 metadata 标记 `ascent_icl_training_context: current_episode_v1`。
+旧版把 ICL 历史带入训练的运行必须从初始模型重跑；禁止用新版续接旧 checkpoint 混合实验语义。
 
 ```bash
 uv run --locked --extra continual python -m alfworld.continual \

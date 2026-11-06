@@ -5,7 +5,7 @@ from pathlib import Path
 import time
 from .types import Generation
 from .training import NTPTrainer
-from .ascent import AscentTrainer, success_record
+from .ascent import AscentTrainer, success_record, current_episode_training_steps
 from .tt_opsd import turn_records
 from .sft import SFTTrainer, build_samples
 from .context import fit_context
@@ -167,15 +167,20 @@ class HFBackend:
         ids = self.tokenizer.encode(text, add_special_tokens=False)
         return text, ids
 
-    def generate(self, messages, *, max_new_tokens=None):
-        import torch
+    def prepare_input(self, messages, *, max_new_tokens=None):
+        """Render/bound a prompt identically for generation and local training context."""
         max_new_tokens = self.config.model.max_new_tokens if max_new_tokens is None else max_new_tokens
         text_config = getattr(self.model.config, "text_config", self.model.config)
         maximum = min(self.config.model.max_input_tokens, text_config.max_position_embeddings - max_new_tokens)
         if maximum < 1:
             raise ValueError("Output budget exceeds model context length and leaves no input space")
-        input_messages, text, ids, truncation = fit_context(
+        return fit_context(
             messages, maximum, self.serialize, self.tokenizer, self.config.model.context_overflow)
+
+    def generate(self, messages, *, max_new_tokens=None):
+        import torch
+        max_new_tokens = self.config.model.max_new_tokens if max_new_tokens is None else max_new_tokens
+        input_messages, text, ids, truncation = self.prepare_input(messages, max_new_tokens=max_new_tokens)
         device = next(self.model.parameters()).device
         inputs = torch.tensor([ids], device=device)
         eos = self.tokenizer.eos_token_id
@@ -242,9 +247,14 @@ class HFBackend:
         else:
             text, kept, removed = success_record(episode)
             privileged_ids = self.tokenizer.encode(text, add_special_tokens=False)
-            result = self.trainer.train(episode.steps, privileged_ids, architecture.max_position_embeddings)
+            steps = (current_episode_training_steps(episode) if self.config.method == "ascent-icl"
+                     else episode.steps)
+            result = self.trainer.train(steps, privileged_ids, architecture.max_position_embeddings)
             result.update(kind="ascent", teacher_record=text, teacher_token_ids=privileged_ids,
                           retained_turns=kept, filtered_turns=removed)
+            if self.config.method == "ascent-icl":
+                result.update(training_context_scope="current_episode",
+                              training_input_tokens=[len(s["input_token_ids"]) for s in steps])
         result.update(loss_scope="all_generated_response_tokens_including_eos",
                       loss_reduction="mean_of_turn_token_means")
         return result
@@ -293,6 +303,12 @@ class MockBackend:
         self.config = config
         self.updates = 0
 
+    def prepare_input(self, messages, *, max_new_tokens=None):
+        text = json.dumps(messages, ensure_ascii=False)
+        ids = list(text.encode())
+        return messages, text, ids, {"original_input_tokens": len(ids), "input_tokens": len(ids),
+                                    "dropped_messages": 0, "truncated_content_tokens": 0}
+
     def generate(self, messages, *, max_new_tokens=None):
         prompt = json.dumps(messages, ensure_ascii=False)
         from .cheatsheet import CURATOR_SYSTEM
@@ -333,6 +349,8 @@ class MockBackend:
                     "retained_turns": [s["step"] for s in episode.steps], "filtered_turns": [],
                     "seconds": 0.0, "skipped": skipped}
         text, kept, removed = success_record(episode)
+        if self.config.method == "ascent-icl":
+            current_episode_training_steps(episode)
         self.updates += 1
         return {"kind": "ascent", "mock": True, "optimizer_steps": 0, "loss": None,
                 "teacher_record": text, "retained_turns": kept, "filtered_turns": removed,

@@ -1,11 +1,23 @@
 """ASCENT: verified online self-distillation (arXiv:2610.05303, Eq. 8).
 
-The rollout token prefix is immutable. Only the teacher receives hindsight.
+ASCENT keeps its rollout prefix; ASCENT+ICL supplies a current-episode-only prefix.
+Generated response tokens are immutable. Only the teacher receives hindsight.
 This backend targets Qwen3_5ForCausalLM, as does the continual HF backend.
 """
 import re
 import time
 from .training import NTPTrainer
+
+
+def current_episode_training_steps(episode):
+    """Swap only the conditioning prefix; preserve actual rollout response tokens."""
+    steps = []
+    for step in episode.steps:
+        prefix = step.get("training_input_token_ids")
+        if not prefix:
+            raise ValueError("ASCENT+ICL requires current-episode training prefixes; restart legacy runs")
+        steps.append({**step, "input_token_ids": prefix})
+    return steps
 
 
 def episode_goal(episode):

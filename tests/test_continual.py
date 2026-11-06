@@ -230,11 +230,14 @@ class ProtocolTests(unittest.TestCase):
                 seen.append((self.updates, copy.deepcopy(messages)))
                 return super().generate(messages, **kwargs)
             def distill_episode(self, episode):
-                # Retain the exact rollout prefix, including ICL history, for ASCENT.
+                # Keep rollout context for audit, but train on current-episode context.
                 prefix = json.loads(bytes(episode.steps[0]["input_token_ids"]).decode())
                 self_prefix = seen[-1][1]
                 if prefix != self_prefix:
                     raise AssertionError("Distillation lost rollout context")
+                local = json.loads(bytes(episode.steps[0]["training_input_token_ids"]).decode())
+                if local != [system_message(self.config.action_mode), episode.messages[0]]:
+                    raise AssertionError("Training prefix leaked ICL history or future feedback")
                 distilled.append(copy.deepcopy(prefix))
                 return super().distill_episode(episode)
         class FailingBackend(Backend):
@@ -266,6 +269,45 @@ class ProtocolTests(unittest.TestCase):
         baseline, _ = load_checkpoint(Path(self.config.output_dir))
         self.assertEqual(resumed["method"], baseline["method"])
         self.assertEqual(resumed["backend"], baseline["backend"])
+
+    def test_ascent_icl_training_prefixes_exclude_history_and_future_turns(self):
+        self.config.method = "ascent-icl"
+        self.config.checkpoint_interval = 1
+        class TwoTurnEnv(FakeEnv):
+            def step(self, action):
+                self.calls += 1
+                done = self.calls == 2
+                return f"LOCAL_FEEDBACK_{self.calls}", int(done), done, {"admissible_commands": ["look"], "won": done}
+        run(self.config, backend_factory=MockBackend, env_factory=TwoTurnEnv)
+        root = Path(self.config.output_dir)
+        _, rows = load_checkpoint(root)
+        for position, row in enumerate(rows):
+            folder = root / row["attempt_dir"]
+            episode = json.loads((folder / "episode.json").read_text())
+            records = [json.loads(line) for line in (folder / "steps.jsonl").read_text().splitlines()]
+            records = [r for r in records if r.get("event") == "step"]
+            for index, record in enumerate(records):
+                expected = [system_message(self.config.action_mode), *episode["messages"][:2 * index + 1]]
+                self.assertEqual(record["training_messages"], expected)
+                self.assertEqual(json.loads(bytes(record["training_input_token_ids"]).decode()), expected)
+                self.assertEqual(record["training_context_scope"], "current_episode")
+                self.assertEqual(record["output_token_ids"], episode["steps"][index]["output_token_ids"])
+                self.assertEqual(sum(m["content"].startswith("BEGIN EPISODE") for m in record["messages"]), position + 1)
+                if position:
+                    self.assertLess(record["training_input_tokens"], record["input_tokens"])
+            self.assertNotIn("LOCAL_FEEDBACK_1", records[0]["training_prompt"])
+            self.assertIn("LOCAL_FEEDBACK_1", records[1]["training_prompt"])
+            self.assertNotIn("LOCAL_FEEDBACK_2", records[1]["training_prompt"])
+
+    def test_ascent_icl_rejects_legacy_training_context_resume(self):
+        self.config.method = "ascent-icl"
+        run(self.config, backend_factory=MockBackend, env_factory=FakeEnv)
+        path = Path(self.config.output_dir) / "metadata.json"
+        saved = json.loads(path.read_text())
+        saved.pop("ascent_icl_training_context")
+        path.write_text(json.dumps(saved))
+        with self.assertRaisesRegex(ValueError, "training context changed"):
+            run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
 
     def test_task_scope_context_and_cheatsheet_reset(self):
         for method in ("icl", "dc-cumulative"):
