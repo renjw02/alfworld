@@ -270,7 +270,7 @@ uv run --locked --extra continual python -m alfworld.continual \
    加成功记录的 token IDs，关闭 LoRA 并禁用梯度。成功记录独立编码后拼接，不重新编码
    student 前缀，不调用模型生成新的监督答案。
 3. 在所有生成响应 token（含 EOS、格式错误及非法动作轮次）上计算全词表
-   `KL(teacher || student)`。先平均每轮 token，再平均轮次。system/user/模板和成功记录
+   默认 forward KL `KL(teacher || student)`。先平均每轮 token，再平均轮次。system/user/模板和成功记录
    本身不作为目标；超长推理已经截断的前缀也按当时实际 token 原样复用。
 4. 每个成功局执行两次完整 episode 梯度累积与 AdamW 更新，LoRA 和优化器状态跨局延续，
    不回放历史 episode。日志保留轨迹用于审计，不作为 replay buffer。
@@ -279,6 +279,22 @@ uv run --locked --extra continual python -m alfworld.continual \
 这里把 scale 实现为 PEFT `lora_alpha=32`，采用默认 alpha/r 缩放。
 论文未明确的细节采用 dropout=0、weight decay=0、max grad norm=1、AdamW 默认 betas/eps、
 蒸馏温度=1，以及上述 EOS 处理方式。这些属于实现假设，不声称来自作者代码。
+
+可通过 YAML `ascent.kl_direction: reverse` 或 CLI `--kl-direction reverse` 使用
+reverse KL `KL(student || teacher)`。默认 `forward` 保持原目标；两种方向都在 FP32 中
+计算全词表分布，teacher 无梯度，reverse 的 student 概率权重也参与求导。
+该设置适用于 `ascent`、`ascent-icl` 以及共用训练器的 `tt-opsd`。
+它仍使用原 rollout 响应位置，不重新采样。`config.json` 和训练 `update.json` 记录方向；
+旧 checkpoint 缺省视为 forward，恢复时不允许切换方向。
+
+例如在 heat&place 39 局上使用 reverse KL：
+
+```bash
+.venv/bin/python -m alfworld.continual \
+  --config configs/continual-heat-place.yaml --method ascent \
+  --kl-direction reverse --device cuda:0 \
+  --output-dir runs/heat-place-ascent-reverse-kl-seed42
+```
 
 teacher/student 共享基座权重；decoder 开启 gradient checkpointing，输出头和 KL 按
 `ascent.logits_chunk_tokens`（默认 32）个响应位置进行 checkpointed 分块计算。

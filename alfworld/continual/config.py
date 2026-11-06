@@ -47,6 +47,7 @@ class TrainingConfig:
 
 @dataclass
 class AscentConfig:
+    kl_direction: str = "forward"  # forward: KL(teacher || student); reverse: KL(student || teacher)
     rank: int = 16
     alpha: int = 32
     dropout: float = 0.0
@@ -178,6 +179,8 @@ class Config:
                 raise ValueError(f"sft.{name} must be an integer >= {minimum}")
         if self.is_distillation:
             a = self.ascent
+            if a.kl_direction not in ("forward", "reverse"):
+                raise ValueError("ascent.kl_direction must be forward or reverse")
             for name in ("rank", "alpha", "optimizer_steps", "logits_chunk_tokens"):
                 value = getattr(a, name)
                 if isinstance(value, bool) or not isinstance(value, int) or value < 1:

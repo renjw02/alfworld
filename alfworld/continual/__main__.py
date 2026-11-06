@@ -12,6 +12,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="configs/continual.yaml")
     parser.add_argument("--method", choices=METHODS)
+    parser.add_argument("--kl-direction", choices=["forward", "reverse"],
+                        help="ASCENT/ASCENT+ICL/TT-OPSD KL direction (default: forward)")
     parser.add_argument("--stream-order", choices=["shuffled", "task_blocked"])
     parser.add_argument("--split", choices=STREAM_SPLITS)
     parser.add_argument("--action-mode", choices=["free", "admissible"])
@@ -37,6 +39,10 @@ def main():
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     config = load_config(args.config)
+    if args.kl_direction is not None:
+        if (args.method or config.method) not in ("ascent", "ascent-icl", "tt-opsd"):
+            parser.error("--kl-direction requires ascent, ascent-icl, or tt-opsd")
+        config.ascent.kl_direction = args.kl_direction
     for name in ("method", "action_mode", "output_dir", "max_steps", "window_episodes", "checkpoint_interval",
                  "cheatsheet_max_new_tokens", "memory_scope", "icl_success_only"):
         value = getattr(args, name)

@@ -24,6 +24,7 @@ model:
   context_overflow: truncate_oldest
   max_new_tokens: 1024
 ascent:
+  kl_direction: forward  # override with --kl-direction reverse for ASCENT
   rank: 16
   alpha: 32
   dropout: 0.0

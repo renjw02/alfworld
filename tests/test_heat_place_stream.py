@@ -125,6 +125,17 @@ class HeatPlaceStreamTests(unittest.TestCase):
                 self.assertEqual(metadata["protocol"], "valid_heat_place_streaming_adaptation")
                 resumed = run(self.config, resume=True, backend_factory=MockBackend, env_factory=HeatEnv)
                 self.assertEqual(resumed["episodes"], 4)
+                if method == "ascent":
+                    # Old runs omitted the direction and must retain forward KL.
+                    path = out / "config.json"
+                    values = json.loads(path.read_text())
+                    values["ascent"].pop("kl_direction")
+                    path.write_text(json.dumps(values))
+                    self.assertEqual(run(self.config, resume=True, backend_factory=MockBackend,
+                                         env_factory=HeatEnv)["episodes"], 4)
+                    self.config.ascent.kl_direction = "reverse"
+                    with self.assertRaisesRegex(ValueError, "Resume configuration differs"):
+                        run(self.config, resume=True, backend_factory=MockBackend, env_factory=HeatEnv)
         self.assertEqual(manifests[0], manifests[1])
         self.assertEqual(manifests[0], manifests[2])
 

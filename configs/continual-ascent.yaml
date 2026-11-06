@@ -24,6 +24,7 @@ model:
   context_overflow: truncate_oldest
   max_new_tokens: 1024
 ascent:
+  kl_direction: forward  # reverse selects KL(student || teacher)
   # Paper Appendix B.3: down_proj only, rank 16, scale 32, two steps.
   rank: 16
   alpha: 32

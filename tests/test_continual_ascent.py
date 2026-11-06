@@ -1,7 +1,7 @@
 """ASCENT protocol and tiny real-model tests; no downloaded weights required."""
 import copy
 import unittest
-from alfworld.continual.ascent import success_record, forward_kl_sum, current_episode_training_steps
+from alfworld.continual.ascent import success_record, forward_kl_sum, reverse_kl_sum, current_episode_training_steps
 from alfworld.continual.config import Config, load_config
 from alfworld.continual.methods import Method
 from alfworld.continual.model import HFBackend, MockBackend
@@ -20,6 +20,38 @@ def episode():
 
 
 class AscentProtocolTests(unittest.TestCase):
+    def test_kl_direction_config_and_cli(self):
+        from unittest.mock import patch
+        from alfworld.continual.__main__ import main
+        config = Config(method="ascent")
+        self.assertEqual(config.ascent.kl_direction, "forward")
+        config.ascent.kl_direction = "reverse"
+        config.validate()
+        config.ascent.kl_direction = "invalid"
+        with self.assertRaisesRegex(ValueError, "kl_direction"):
+            config.validate()
+        with patch("sys.argv", ["continual", "--config", "configs/continual-heat-place.yaml",
+                                "--method", "ascent", "--kl-direction", "reverse"]), \
+                patch("alfworld.continual.__main__.run", return_value={}) as run:
+            main()
+            self.assertEqual(run.call_args.args[0].ascent.kl_direction, "reverse")
+
+    def test_reverse_kl_direction_and_detachment(self):
+        import torch
+        p = torch.tensor([[1., -1., 0.]], requires_grad=True)
+        q = torch.tensor([[-2., 2., 0.]], requires_grad=True)
+        loss = reverse_kl_sum(p, q)
+        expected = torch.distributions.kl_divergence(
+            torch.distributions.Categorical(logits=p),
+            torch.distributions.Categorical(logits=q.detach())).sum()
+        torch.testing.assert_close(loss, expected)
+        self.assertNotAlmostEqual(loss.item(), forward_kl_sum(p, q).item())
+        loss.backward()
+        prob = p.detach().softmax(-1)
+        delta = p.detach().log_softmax(-1) - q.detach().log_softmax(-1)
+        torch.testing.assert_close(p.grad, prob * (delta - (prob * delta).sum(-1, keepdim=True)))
+        self.assertIsNone(q.grad)
+
     def test_local_prefix_preserves_responses_and_rejects_legacy_steps(self):
         e = episode()
         e.steps[0]["input_token_ids"] = [20, 21, 22, 3, 4, 5]
@@ -121,19 +153,25 @@ class AscentProtocolTests(unittest.TestCase):
 
 
 class AscentModelTests(unittest.TestCase):
+    def test_reverse_updates_teacher_freeze_chunking_and_resume(self):
+        for method in ("ascent", "ascent-icl"):
+            with self.subTest(method=method):
+                self.check_model(method, "reverse")
+
     def test_exact_prefix_updates_teacher_freeze_and_resume(self):
         self.check_model("ascent")
 
     def test_icl_exact_prefix_updates_teacher_freeze_and_resume(self):
         self.check_model("ascent-icl")
 
-    def check_model(self, method):
+    def check_model(self, method, kl_direction="forward"):
         import torch
         from types import SimpleNamespace
         from transformers import Qwen3_5TextConfig, Qwen3_5ForCausalLM
         torch.set_num_threads(2)
         torch.manual_seed(42)
         config = Config(method=method)
+        config.ascent.kl_direction = kl_direction
         config.model.device = "cpu"
         config.ascent.logits_chunk_tokens = 1
         architecture = Qwen3_5TextConfig(
@@ -150,6 +188,16 @@ class AscentModelTests(unittest.TestCase):
                             tokenizer=SimpleNamespace(encode=lambda text, **kwargs: [10, 11]))
         self.assertTrue(all("down_proj" in name for name in backend.target_modules))
         trainer = backend.trainer
+        # Independently verify the configured objective through the actual head.
+        student_hidden = torch.randn(1, 2, architecture.hidden_size, requires_grad=True)
+        teacher_hidden = torch.randn_like(student_hidden)
+        head = backend.model.get_base_model().get_output_embeddings()
+        student_dist = torch.distributions.Categorical(logits=head(student_hidden).float())
+        teacher_dist = torch.distributions.Categorical(logits=head(teacher_hidden).detach().float())
+        first, second = ((teacher_dist, student_dist) if kl_direction == "forward"
+                         else (student_dist, teacher_dist))
+        torch.testing.assert_close(trainer._block_loss(student_hidden, teacher_hidden),
+                                   torch.distributions.kl_divergence(first, second).sum())
         e, z = episode(), [10, 11]
         if config.uses_icl:
             for step in e.steps:
@@ -164,6 +212,7 @@ class AscentModelTests(unittest.TestCase):
             torch.testing.assert_close(head(teacher_before), full[:, -3:])
         initial = copy.deepcopy(backend.state_dict())
         result = backend.distill_episode(e)
+        self.assertEqual(result["kl_direction"], kl_direction)
         self.assertEqual(result["optimizer_steps"], 2)
         self.assertEqual(result["target_tokens"], 5)  # Invalid turn AND EOS included.
         self.assertEqual(result["training_turns"], 2)

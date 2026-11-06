@@ -54,6 +54,14 @@ def forward_kl_sum(student_logits, teacher_logits):
     return (log_q.exp() * (log_q - log_p)).sum()
 
 
+def reverse_kl_sum(student_logits, teacher_logits):
+    """Full vocabulary KL(p || q), with gradients through both student factors."""
+    import torch.nn.functional as F
+    log_q = F.log_softmax(teacher_logits.detach().float(), dim=-1)
+    log_p = F.log_softmax(student_logits.float(), dim=-1)
+    return (log_p.exp() * (log_p - log_q)).sum()
+
+
 class AscentTrainer(NTPTrainer):
     """Share the frozen base; accumulate all turns before each optimizer step.
 
@@ -81,7 +89,8 @@ class AscentTrainer(NTPTrainer):
         import torch
         with torch.no_grad():
             teacher_logits = head(teacher_hidden)
-        return forward_kl_sum(head(student_hidden), teacher_logits)
+        kl_sum = reverse_kl_sum if self.config.kl_direction == "reverse" else forward_kl_sum
+        return kl_sum(head(student_hidden), teacher_logits)
 
     def train(self, steps, privileged_ids, context_limit):
         """ASCENT uses the same full-trajectory record at every turn."""
@@ -113,7 +122,8 @@ class AscentTrainer(NTPTrainer):
                                  "the rollout prefix and privileged record will not be truncated")
             turns.append((step["step"], ids, len(response), privileged_ids))
         if not turns:
-            return {"skipped": True, "skip_reason": "no_response_tokens", "optimizer_steps": 0,
+            return {"skipped": True, "kl_direction": self.config.kl_direction,
+                    "skip_reason": "no_response_tokens", "optimizer_steps": 0,
                     "total_optimizer_steps": self.steps, "target_tokens": 0, "loss": None,
                     "seconds": time.perf_counter() - start}
         self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
@@ -156,7 +166,8 @@ class AscentTrainer(NTPTrainer):
             self.model.gradient_checkpointing_disable()
             self.model.config.use_cache = True
             self.model.eval()
-        return {"skipped": False, "optimizer_steps": len(records), "total_optimizer_steps": self.steps,
+        return {"skipped": False, "kl_direction": self.config.kl_direction,
+                "optimizer_steps": len(records), "total_optimizer_steps": self.steps,
                 "target_tokens": sum(length for _, _, length, _ in turns), "training_turns": len(turns),
                 "updates": records, "loss": sum(r["loss"] for r in records) / len(records),
                 "seconds": time.perf_counter() - start}

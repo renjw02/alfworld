@@ -181,6 +181,7 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             from dataclasses import asdict
             from .config import AscentConfig, SFTConfig
             saved_config.setdefault("ascent", asdict(AscentConfig()))
+            saved_config["ascent"].setdefault("kl_direction", "forward")
             saved_config.setdefault("sft", asdict(SFTConfig()))
             # Pre-batching SFT runs used one update per sample. Do not silently
             # resume them with the new effective batch size.
