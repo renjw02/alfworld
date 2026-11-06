@@ -7,6 +7,7 @@ import yaml
 NTP_METHODS = ("history-ntp", "history-ntp-assistant", "history-ntp-assistant-success")
 ASCENT_METHODS = ("ascent", "ascent-icl")
 METHODS = ("memoryless", "icl", "dc-cumulative", *NTP_METHODS, *ASCENT_METHODS, "tt-opsd", "success-only-sft")
+STREAM_SPLITS = ("valid_seen", "valid_unseen", "valid_heat_place")
 
 
 @dataclass
@@ -119,8 +120,8 @@ class Config:
             raise ValueError("Unknown memory_scope")
         if self.memory_scope == "task_type" and self.stream.order != "task_blocked":
             raise ValueError("task_type memory_scope requires task_blocked order")
-        if self.stream.split != "valid_seen":
-            raise ValueError("This protocol uses valid_seen")
+        if self.stream.split not in STREAM_SPLITS:
+            raise ValueError(f"stream.split must be one of {STREAM_SPLITS}")
         if sorted(self.stream.task_order) != list(range(1, 7)):
             raise ValueError("task_order must be a permutation of 1..6")
         if self.model.backend not in ("hf", "mock"):

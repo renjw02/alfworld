@@ -58,7 +58,7 @@ def restore_rng(state, config):
                 torch.cuda.set_rng_state(value, device)
 
 
-def metadata():
+def metadata(split="valid_seen"):
     packages = {}
     for name in ("alfworld", "textworld", "torch", "transformers", "peft", "numpy"):
         try:
@@ -71,7 +71,7 @@ def metadata():
     except (OSError, subprocess.CalledProcessError):
         commit, dirty = None, None
     return {"git_commit": commit, "git_dirty": dirty, "packages": packages,
-            "python": sys.version, "protocol": "valid_seen_streaming_adaptation",
+            "python": sys.version, "protocol": f"{split}_streaming_adaptation",
             "ascent_icl_training_context": "current_episode_v1"}
 
 
@@ -208,14 +208,14 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             manifest = prepare_manifest(config.stream)
             write_json(root / "manifest.json", manifest)
             write_json(root / "config.json", config.to_dict())
-            write_json(root / "metadata.json", metadata())
+            write_json(root / "metadata.json", metadata(config.stream.split))
         # Keep all traces from one invocation together, including resumed attempts.
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
         trace_root = root / "traces" / stamp
         trace_root.mkdir(parents=True, exist_ok=False)
         write_json(trace_root / "invocation.json", {
             "started_at_utc": stamp, "resume": resume, "config": config.to_dict(),
-            "metadata": metadata(), "system_message": system_message(config.action_mode),
+            "metadata": metadata(config.stream.split), "system_message": system_message(config.action_mode),
         })
         print(f"Execution traces: {trace_root}", flush=True)
         seed_all(config.stream.seed, config)

@@ -1,6 +1,7 @@
 # ALFWorld streaming continual learning
 
-本框架比较跨 episode 更新 **context** 与更新 **LoRA 参数**。数据来自 `valid_seen`，
+本框架比较跨 episode 更新 **context** 与更新 **LoRA 参数**。默认数据来自 `valid_seen`，
+也支持 `valid_unseen` 和合并 seen/unseen 的 `valid_heat_place` 子集，
 结果是在线适应（streaming adaptation）结果，不是冻结模型的标准验证成绩。
 初始实验使用本地 `/data/jiawei/models/Qwen3.5-9B`，仅运行 ALFWorld 文本环境。
 
@@ -43,6 +44,42 @@ Linux x86_64、Python 3.11+ 的 Torch/TorchVision 使用官方 CUDA 12.8 wheel �
 并选择空闲显存满足要求的 GPU；安装依赖不会自动下载模型。
 底层 Qwen3.5 线性注意力在没有可选优化 kernel 时使用正确但较慢的 PyTorch 实现。
 当前实现优先验证实验语义，没有自动安装 `flash-linear-attention` 或 `causal-conv1d`。
+
+## Heat&place 专用子集（seen + unseen）
+
+`valid_heat_place` 合并 `valid_seen` 的 **16** 个和 `valid_unseen` 的 **23** 个
+`pick_heat_then_place_in_recep` 游戏，共 **39** 个。它是逻辑合并，直接加载原始游戏，
+无需复制数据或创建软链接；沿用 solvable、非 Sliced/非 movable 等原有筛选规则。
+每个 episode ID 带来源 split 前缀，manifest 的 `source_split` 保留 seen/unseen 来源。
+先合并再按 seed 打乱，跨来源持续保留历史、cheatsheet 或 LoRA。
+
+统一配置为 `configs/continual-heat-place.yaml`，固定清单为
+`configs/manifests/valid_heat_place.seed42.json`。清单包含相对数据路径和 SHA-256，
+三种方法使用同样的 39 个任务和 seed=42 顺序。仓库根目录下运行：
+
+```bash
+for method in icl dc-cumulative ascent; do
+  .venv/bin/python -m alfworld.continual \
+    --config configs/continual-heat-place.yaml \
+    --method "$method" --device cuda:0 \
+    --output-dir "runs/heat-place-${method}-seed42"
+done
+```
+
+`--data-dir` 或 `ALFWORLD_DATA` 可指定包含 `json_2.1.1/` 的数据目录。
+默认每种方法都从基座重新开始；运行中断后用相同命令加 `--resume`。
+要换 seed/order，可将配置的 `stream.manifest` 设为 `null` 自动生成新顺序，
+或在其他现有配置上添加 `--split valid_heat_place --seed <seed>`。
+该别名要求 seen/unseen 两个来源均存在，不会在缺失一个来源时静默运行缩小的数据集。
+
+只检查数据、环境和流程而不加载模型，可在单种方法命令后添加
+`--backend mock --max-steps 1`，并使用独立输出目录。Mock 不验证真实模型训练或效果。
+
+**失败轨迹研究的当前边界：** ICL 保留失败局历史，DC 的 curator 也接收失败局及其结果；
+当前 Ascent 遇到失败局会记录 `skip_reason: unsuccessful_episode`，只有成功局才更新参数。
+因此三者可以直接运行在此子集上，但当前 Ascent 是成功轨迹学习对照，
+若要让它从失败轨迹更新参数，仍需单独定义并实现新的学习目标。
+合并后的成绩是混合 seen/unseen 的在线适应结果，不是标准 unseen 泛化成绩。
 
 ## 方法和交互协议
 

@@ -4,7 +4,7 @@ import json
 import os
 # alfworld.info initializes this variable during imports; only honor the caller's value.
 DATA_DIR_ENV = os.environ.get("ALFWORLD_DATA")
-from .config import METHODS, load_config
+from .config import METHODS, STREAM_SPLITS, load_config
 from .runner import run
 
 
@@ -13,6 +13,7 @@ def main():
     parser.add_argument("--config", default="configs/continual.yaml")
     parser.add_argument("--method", choices=METHODS)
     parser.add_argument("--stream-order", choices=["shuffled", "task_blocked"])
+    parser.add_argument("--split", choices=STREAM_SPLITS)
     parser.add_argument("--action-mode", choices=["free", "admissible"])
     parser.add_argument("--output-dir")
     parser.add_argument("--manifest")
@@ -40,7 +41,7 @@ def main():
         if value is not None:
             setattr(config, name, value)
     for arg, field in (("stream_order", "order"), ("manifest", "manifest"), ("data_dir", "data_dir"),
-                       ("seed", "seed"), ("limit", "limit")):
+                       ("seed", "seed"), ("limit", "limit"), ("split", "split")):
         value = getattr(args, arg)
         if value is not None:
             setattr(config.stream, field, value)

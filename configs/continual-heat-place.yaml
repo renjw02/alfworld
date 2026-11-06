@@ -1,0 +1,34 @@
+# Shared 39-game stream: 16 valid_seen + 23 valid_unseen heat&place tasks.
+# Override --method with icl, dc-cumulative, or ascent; use separate output dirs.
+method: icl
+action_mode: admissible
+window_episodes: 4
+max_steps: 50
+output_dir: runs/heat-place-icl
+cheatsheet_max_new_tokens: 2048
+checkpoint_interval: 10
+memory_scope: stream
+stream:
+  order: shuffled
+  seed: 42
+  task_order: [1, 2, 3, 4, 5, 6]
+  data_dir: ~/.cache/alfworld
+  split: valid_heat_place
+  manifest: configs/manifests/valid_heat_place.seed42.json
+  limit: null
+model:
+  path: /data/jiawei/models/Qwen3.5-9B
+  device: cuda:0
+  backend: hf
+  max_input_tokens: 65536
+  context_overflow: truncate_oldest
+  max_new_tokens: 1024
+ascent:
+  rank: 16
+  alpha: 32
+  dropout: 0.0
+  learning_rate: 0.00015
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  optimizer_steps: 2
+  logits_chunk_tokens: 32
