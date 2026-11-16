@@ -53,6 +53,13 @@ def summarize(root, rolling_window=20):
               "rolling_window": rolling_window,
               "by_task": by_task,
               "backend": json.loads((root / "model.json").read_text())["backend"]}
+    if any("negative_feedback_count" in row for row in rows):
+        negatives = sum(row.get("negative_feedback_count", 0) for row in rows)
+        calls = sum(row["environment_calls"] for row in rows)
+        result.update(negative_feedback_count=negatives,
+                      negative_feedback_rate=negatives / calls if calls else None,
+                      optimizer_steps=sum(row.get("optimizer_steps", 0) for row in rows),
+                      training_seconds=sum(row["training_seconds"] for row in rows))
     write_json(root / "summary.json", result)
     return result
 

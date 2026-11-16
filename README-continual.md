@@ -587,3 +587,35 @@ uv run --locked --extra continual python -m alfworld.continual \
 
 旧版每条样本更新一次的 SFT 运行若要继续恢复，需显式设 `batch_size: 1` 和
 `gradient_accumulation_steps: 1`；直接改成新默认值会触发 resume 配置不一致保护。
+
+## Negative Unlikelihood（Negative-UL）
+
+`negative-ul` 在每个实际执行且返回 `Nothing happens` 的步骤后立即更新一次 LoRA，
+下一步使用更新后的参数。反馈匹配忽略大小写、首尾空白和末尾句点；格式错误、未执行动作、
+普通反馈、仅 observation 未变化或整局失败均不会单独触发更新。当前局保留完整历史，
+跨局仅保留参数和优化器，不增加跨局 ICL。终局负反馈也更新，episode 结束不重复训练。
+
+候选集合是**执行前**的 `admissible_commands` 去重后补入实际负动作。所有候选共用
+实际生成时的历史、本步 Reasoning 和 `Action:` 前缀；候选续写统一为一个空格、完整动作、EOS。
+以动作及 EOS 的 token log-prob **求和**得到 `z_a`，再用温度 1 的 softmax 得到候选概率。
+目标为 `-log(1-softmax(z)[bad])`，稳定计算为 `softplus(z_bad-logsumexp(z_other))`。
+这是单负动作的集合归一化 UL，不是逐 token UL；其余候选不被标注为正确动作。
+本次环境反馈不进入评分输入。单候选或无法可靠对齐生成 token 的步骤明确记录跳过原因。
+
+默认沿用 `training`：all-linear LoRA（排除 lm_head）、rank=16、alpha=32、dropout=0、
+AdamW lr=1e-5、weight decay=0、梯度裁剪=1，每次负反馈一个 optimizer step。
+首版仅支持单 GPU。评分不截断候选或二次裁剪历史，超过模型上下文容量时明确报错。
+通过两遍精确链式求导控制显存：先计算所有候选分数及 `dL/dz`，再逐候选重算并累积梯度，
+最后更新一次；所有候选都参与梯度，不省略 softmax 分母。强制 dropout=0 保证两遍一致。
+
+```bash
+.venv/bin/python -m alfworld.continual \
+  --config configs/continual-negative-ul.yaml --device cuda:0
+```
+
+该配置固定 heat&place 39 局、seed=42、每局最多 50 步，输出到
+`runs/heat-place-negative-ul-seed42`。短程验证可另设 `--limit 1 --output-dir runs/negative-ul-smoke`。
+`steps.jsonl` 中 `negative_ul_update` 事件记录候选、token 输入、分数、负动作概率、loss、
+梯度范数、耗时和模型版本；`episode.json` 保存对应更新，episode 末尾 `update.json` 只做汇总。
+`summary.json` 增加负反馈率、实际 optimizer steps 和训练耗时；mock 更新不计为真实训练。
+恢复沿用 episode 边界事务 checkpoint；崩溃后重跑最近未提交的 episode，不做局内恢复。

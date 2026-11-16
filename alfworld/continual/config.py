@@ -6,7 +6,7 @@ import yaml
 
 NTP_METHODS = ("history-ntp", "history-ntp-assistant", "history-ntp-assistant-success")
 ASCENT_METHODS = ("ascent", "ascent-icl")
-METHODS = ("memoryless", "icl", "dc-cumulative", *NTP_METHODS, *ASCENT_METHODS, "tt-opsd", "success-only-sft", "sft")
+METHODS = ("memoryless", "icl", "dc-cumulative", *NTP_METHODS, *ASCENT_METHODS, "tt-opsd", "success-only-sft", "sft", "negative-ul")
 STREAM_SPLITS = ("valid_seen", "valid_unseen", "valid_heat_place")
 
 
@@ -87,7 +87,7 @@ class Config:
 
     @property
     def trains_parameters(self):
-        return self.is_ntp or self.is_distillation or self.method in ("success-only-sft", "sft")
+        return self.is_ntp or self.is_distillation or self.method in ("success-only-sft", "sft", "negative-ul")
 
     @property
     def is_tt_opsd(self):
@@ -136,6 +136,13 @@ class Config:
             raise ValueError("Unknown model.context_overflow policy")
         if self.method == "sft" and self.model.context_overflow != "error":
             raise ValueError("Whole-trajectory sft requires model.context_overflow=error")
+        if self.method == "negative-ul":
+            import math
+            if self.training.dropout != 0:
+                raise ValueError("Negative-UL two-pass scoring requires dropout=0")
+            if any(not math.isfinite(getattr(self.training, name))
+                   for name in ("learning_rate", "weight_decay", "max_grad_norm")):
+                raise ValueError("Negative-UL optimizer settings must be finite")
         if self.model.devices:
             if self.trains_parameters and not self.is_distillation:
                 raise ValueError("Multi-GPU layer sharding supports inference methods, ASCENT and TT-OPSD only")

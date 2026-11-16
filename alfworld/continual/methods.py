@@ -1,4 +1,4 @@
-"""Methods only own cross-episode state and adaptation policy."""
+"""Methods own retained state and step/episode adaptation policy."""
 import copy
 from .cheatsheet import curator_messages, extract_cheatsheet, reference_message
 from .prompting import system_message
@@ -41,7 +41,28 @@ class Method:
         messages.extend(episode.messages)
         return copy.deepcopy(messages)
 
+    def observe_step(self, record):
+        if self.config.method != "negative-ul":
+            return None
+        from .negative_ul import is_negative
+        record["negative_feedback"] = is_negative(record)
+        if not record["negative_feedback"]:
+            return None
+        result = self.backend.negative_ul_step(record)
+        result["version_before"] = self.version
+        if not result.get("skipped", False):
+            self.version += 1
+        result["version_after"] = self.version
+        return result
+
     def observe_episode(self, episode):
+        if self.config.method == "negative-ul":
+            updates = [s["negative_ul_update"] for s in episode.steps if "negative_ul_update" in s]
+            return {"kind": "negative-ul", "optimizer_steps": sum(u["optimizer_steps"] for u in updates),
+                    "negative_feedback_count": sum(s.get("negative_feedback", False) for s in episode.steps),
+                    "seconds": sum(u["seconds"] for u in updates),
+                    "version_after": self.version}
+
         if self.config.uses_icl:
             keep = self.config.window_episodes - 1
             messages = episode.messages
