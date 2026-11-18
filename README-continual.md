@@ -619,3 +619,38 @@ AdamW lr=1e-5、weight decay=0、梯度裁剪=1，每次负反馈一个 optimize
 梯度范数、耗时和模型版本；`episode.json` 保存对应更新，episode 末尾 `update.json` 只做汇总。
 `summary.json` 增加负反馈率、实际 optimizer steps 和训练耗时；mock 更新不计为真实训练。
 恢复沿用 episode 边界事务 checkpoint；崩溃后重跑最近未提交的 episode，不做局内恢复。
+
+## Projected-KL
+
+`projected-kl` 沿用 Negative-UL 的反馈过滤、候选集合和评分输入：每次实际执行后收到
+`Nothing happens`，将本次失败动作作为唯一坏动作。候选分布是完整动作（含 EOS）序列
+log-prob 求和后的 softmax，条件包含实际生成的 Reasoning；本次反馈不进入评分输入。
+
+每次更新开始前，用当前 Student 在 `no_grad` 下计算 reference 分数，屏蔽坏动作后
+对其余候选重新 softmax，得到冻结目标 `q`。这等价于坏动作概率清零再归一化，但避免
+`1 - p_bad` 的数值消减。随后优化 `KL(q || Student)`；坏动作的目标概率严格为零，
+其余动作保留 reference 的相对偏好，并不被标注为正确动作。不加载额外 Teacher。
+
+`projected_kl.optimizer_steps` 默认 **2**，必须为正整数。同一次反馈的所有子步共享
+最初的 `q`，每步重新计算 Student 分布；下一次反馈重新构造 reference 和目标。
+其余 LoRA/AdamW 参数沿用 `training`，强制 dropout=0，首版仅支持单 GPU。
+使用 Negative-UL 的两遍链式求导以限制显存，所有候选都参与 Student 的归一化分母。
+没有替代候选或 token 无法对齐时记录跳过；上下文超限和非有限分数明确报错。
+
+```bash
+.venv/bin/python -m alfworld.continual \
+  --config configs/continual-projected-kl.yaml --device cuda:0
+```
+
+配置沿用 heat&place 39 局、seed=42、每局最多 50 步，输出到
+`runs/heat-place-projected-kl-seed42`。设置 `--limit 1 --output-dir runs/projected-kl-smoke`
+可进行短程验证；配置为一个 optimizer step 可对照单步 Negative-UL。
+更新起点两者梯度相同；默认两步时计算预算更高，不能把结果解释为等计算预算比较。
+Projected-KL 是本组合目标的描述性命名。
+
+`steps.jsonl` 的 `projected_kl_update` 事件与 `episode.json` 保存样本、reference 分数、
+固定 `target_probabilities`、每个 `substeps` 的更新前 KL/候选分数/坏动作概率/梯度范数，
+以及累计步数、耗时和模型版本。顶层 `loss` 是最后一个子步更新前的 KL，不是更新后评估。
+一次反馈完成全部子步后版本加一，真实 optimizer steps 单独累计；mock 只记录模拟步数。
+终局负反馈也更新，episode 结束仅汇总。跨局保留参数和优化器，不累计坏动作或跨局 ICL。
+恢复沿用 episode 边界事务 checkpoint，未提交 episode 重跑，不支持局内恢复。

@@ -6,7 +6,7 @@ import yaml
 
 NTP_METHODS = ("history-ntp", "history-ntp-assistant", "history-ntp-assistant-success")
 ASCENT_METHODS = ("ascent", "ascent-icl")
-METHODS = ("memoryless", "icl", "dc-cumulative", *NTP_METHODS, *ASCENT_METHODS, "tt-opsd", "success-only-sft", "sft", "negative-ul")
+METHODS = ("memoryless", "icl", "dc-cumulative", *NTP_METHODS, *ASCENT_METHODS, "tt-opsd", "success-only-sft", "sft", "negative-ul", "projected-kl")
 STREAM_SPLITS = ("valid_seen", "valid_unseen", "valid_heat_place")
 
 
@@ -69,6 +69,11 @@ class SFTConfig:
 
 
 @dataclass
+class ProjectedKLConfig:
+    optimizer_steps: int = 2
+
+
+@dataclass
 class Config:
     method: str = "memoryless"
     action_mode: str = "admissible"
@@ -85,9 +90,11 @@ class Config:
     ascent: AscentConfig = field(default_factory=AscentConfig)  # shared by ASCENT and TT-OPSD
     sft: SFTConfig = field(default_factory=SFTConfig)
 
+    projected_kl: ProjectedKLConfig = field(default_factory=ProjectedKLConfig)
+
     @property
     def trains_parameters(self):
-        return self.is_ntp or self.is_distillation or self.method in ("success-only-sft", "sft", "negative-ul")
+        return self.is_ntp or self.is_distillation or self.method in ("success-only-sft", "sft", "negative-ul", "projected-kl")
 
     @property
     def is_tt_opsd(self):
@@ -136,13 +143,16 @@ class Config:
             raise ValueError("Unknown model.context_overflow policy")
         if self.method == "sft" and self.model.context_overflow != "error":
             raise ValueError("Whole-trajectory sft requires model.context_overflow=error")
-        if self.method == "negative-ul":
+        if self.method in ("negative-ul", "projected-kl"):
             import math
             if self.training.dropout != 0:
-                raise ValueError("Negative-UL two-pass scoring requires dropout=0")
+                raise ValueError("Action-level two-pass scoring requires dropout=0")
             if any(not math.isfinite(getattr(self.training, name))
                    for name in ("learning_rate", "weight_decay", "max_grad_norm")):
-                raise ValueError("Negative-UL optimizer settings must be finite")
+                raise ValueError("Action-level optimizer settings must be finite")
+        steps = self.projected_kl.optimizer_steps
+        if isinstance(steps, bool) or not isinstance(steps, int) or steps < 1:
+            raise ValueError("projected_kl.optimizer_steps must be a positive integer")
         if self.model.devices:
             if self.trains_parameters and not self.is_distillation:
                 raise ValueError("Multi-GPU layer sharding supports inference methods, ASCENT and TT-OPSD only")
@@ -208,6 +218,6 @@ class Config:
 
 def load_config(path):
     values = yaml.safe_load(Path(path).read_text()) or {}
-    for name, cls in (("stream", StreamConfig), ("model", ModelConfig), ("training", TrainingConfig), ("ascent", AscentConfig), ("sft", SFTConfig)):
+    for name, cls in (("stream", StreamConfig), ("model", ModelConfig), ("training", TrainingConfig), ("ascent", AscentConfig), ("sft", SFTConfig), ("projected_kl", ProjectedKLConfig)):
         values[name] = cls(**values.get(name, {}))
     return Config(**values)

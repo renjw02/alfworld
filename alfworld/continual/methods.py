@@ -42,13 +42,14 @@ class Method:
         return copy.deepcopy(messages)
 
     def observe_step(self, record):
-        if self.config.method != "negative-ul":
+        if self.config.method not in ("negative-ul", "projected-kl"):
             return None
         from .negative_ul import is_negative
         record["negative_feedback"] = is_negative(record)
         if not record["negative_feedback"]:
             return None
-        result = self.backend.negative_ul_step(record)
+        result = (self.backend.projected_kl_step(record) if self.config.method == "projected-kl"
+                  else self.backend.negative_ul_step(record))
         result["version_before"] = self.version
         if not result.get("skipped", False):
             self.version += 1
@@ -56,9 +57,10 @@ class Method:
         return result
 
     def observe_episode(self, episode):
-        if self.config.method == "negative-ul":
-            updates = [s["negative_ul_update"] for s in episode.steps if "negative_ul_update" in s]
-            return {"kind": "negative-ul", "optimizer_steps": sum(u["optimizer_steps"] for u in updates),
+        if self.config.method in ("negative-ul", "projected-kl"):
+            key = self.config.method.replace("-", "_") + "_update"
+            updates = [s[key] for s in episode.steps if key in s]
+            return {"kind": self.config.method, "optimizer_steps": sum(u["optimizer_steps"] for u in updates),
                     "negative_feedback_count": sum(s.get("negative_feedback", False) for s in episode.steps),
                     "seconds": sum(u["seconds"] for u in updates),
                     "version_after": self.version}

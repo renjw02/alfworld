@@ -5,6 +5,7 @@ from pathlib import Path
 import time
 from .types import Generation
 from .negative_ul import NegativeULTrainer, build_sample, candidates_for
+from .projected_kl import ProjectedKLTrainer
 from .training import NTPTrainer
 from .ascent import AscentTrainer, success_record, current_episode_training_steps
 from .tt_opsd import turn_records
@@ -128,6 +129,7 @@ class HFBackend:
             if not self.target_modules:
                 raise RuntimeError("LoRA matched no modules")
             self.trainer = (AscentTrainer(self.model, training) if config.is_distillation
+                            else ProjectedKLTrainer(self.model, training, config.projected_kl) if config.method == "projected-kl"
                             else NegativeULTrainer(self.model, training) if config.method == "negative-ul"
                             else TrajectorySFTTrainer(self.model, training, config.sft)
                             if config.method == "sft"
@@ -203,13 +205,16 @@ class HFBackend:
         return Generation(self.tokenizer.decode(decode_ids, skip_special_tokens=False), text, ids,
                           output_ids, time.perf_counter() - start, truncated, truncation, input_messages)
 
+    def projected_kl_step(self, record):
+        return self.negative_ul_step(record)
+
     def negative_ul_step(self, record):
         architecture = getattr(self.model.config, "text_config", self.model.config)
         sample, reason = build_sample(record, self.tokenizer, architecture.max_position_embeddings)
         if sample is None:
-            return {"kind": "negative-ul", "skipped": True, "skip_reason": reason,
+            return {"kind": self.config.method, "skipped": True, "skip_reason": reason,
                     "optimizer_steps": 0, "seconds": 0.0, "loss": None}
-        return {"kind": "negative-ul", **self.trainer.train_sample(sample), "sample": sample}
+        return {"kind": self.config.method, **self.trainer.train_sample(sample), "sample": sample}
 
     def train_episode(self, messages):
         if self.trainer is None:
@@ -345,14 +350,18 @@ class MockBackend:
         text = f"Reasoning: This is a control-flow smoke test; inspect the environment.\nAction: {action}"
         return Generation(text, prompt, list(prompt.encode()), list(text.encode()), 0.0)
 
+    def projected_kl_step(self, record):
+        return self.negative_ul_step(record)
+
     def negative_ul_step(self, record):
         candidates = candidates_for(record)
         skipped = len(candidates) < 2
         if not skipped:
             self.updates += 1
-        return {"kind": "negative-ul", "mock": True, "skipped": skipped,
+        return {"kind": self.config.method, "mock": True, "skipped": skipped,
                 "skip_reason": "no_alternative_candidates" if skipped else None,
-                "optimizer_steps": 0, "simulated_optimizer_steps": int(not skipped),
+                "optimizer_steps": 0, "simulated_optimizer_steps": (self.config.projected_kl.optimizer_steps
+                    if self.config.method == "projected-kl" else 1) * int(not skipped),
                 "candidates": candidates, "seconds": 0.0, "loss": None}
 
     def train_episode(self, messages):

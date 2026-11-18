@@ -144,17 +144,18 @@ def run_episode(config, entry, position, method, log, env_factory=TextEnvironmen
             record.update(feedback=feedback, next_observation=observation, next_admissible_commands=commands,
                           score=score, environment_done=bool(done), success=success,
                           episode_done=bool(done or success or step == config.max_steps))
-            if config.method == "negative-ul":
+            if config.method in ("negative-ul", "projected-kl"):
                 from .negative_ul import is_negative
                 record["negative_feedback"] = is_negative(record)
             log.append(record)
             update = method.observe_step(record)
             if update is not None:
-                record["negative_ul_update"] = update
-                log.append({"event": "negative_ul_update", "step": step, **update})
+                key = config.method.replace("-", "_") + "_update"
+                record[key] = update
+                log.append({"event": key, "step": step, **update})
             # Preserve both conditioning prefixes and exact generated response tokens.
             episode.steps.append({k: v for k, v in record.items() if k not in
-                                  (("messages", "prompt", "training_messages", "training_prompt") if config.is_distillation or config.method in ("sft", "negative-ul") else
+                                  (("messages", "prompt", "training_messages", "training_prompt") if config.is_distillation or config.method in ("sft", "negative-ul", "projected-kl") else
                                    ("messages", "prompt", "input_token_ids", "output_token_ids"))})
             if done or success:
                 break
@@ -186,7 +187,8 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             saved_config["model"].setdefault("gpu_memory_gib", [])
             saved_config["model"].setdefault("context_overflow", "error")
             from dataclasses import asdict
-            from .config import AscentConfig, SFTConfig
+            from .config import AscentConfig, SFTConfig, ProjectedKLConfig
+            saved_config.setdefault("projected_kl", asdict(ProjectedKLConfig()))
             saved_config.setdefault("ascent", asdict(AscentConfig()))
             saved_config["ascent"].setdefault("kl_direction", "forward")
             saved_config.setdefault("sft", asdict(SFTConfig()))
@@ -289,7 +291,7 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
                            "reasoning_characters": sum(len(s["reasoning"] or "") for s in episode.steps),
                            "generation_seconds": sum(s["generation_seconds"] for s in episode.steps),
                            "training_seconds": update.get("seconds", 0.0) if update else 0.0}
-                if config.method == "negative-ul":
+                if config.method in ("negative-ul", "projected-kl"):
                     summary.update(negative_feedback_count=update["negative_feedback_count"],
                                    optimizer_steps=update["optimizer_steps"])
                 if config.method == "dc-cumulative":
