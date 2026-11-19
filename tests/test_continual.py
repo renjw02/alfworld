@@ -69,6 +69,92 @@ class ProtocolTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "Resume configuration differs"):
                     run(self.config, resume=True, backend_factory=Backend, env_factory=Env)
 
+    def test_icl_nothing_happen_only_history_and_resume(self):
+        class Env(FakeEnv):
+            def step(self, action):
+                if action == "invented command":
+                    return "Nothing happens.", 0, False, {"admissible_commands": ["look"], "won": False}
+                return super().step(action)
+
+        class Backend(MockBackend):
+            def generate(self, messages, **kwargs):
+                start = max(i for i, m in enumerate(messages)
+                            if m["content"].startswith("BEGIN EPISODE"))
+                turn = sum(m["role"] == "assistant" for m in messages[start:])
+                text = ["malformed response", "Reasoning: try\nAction: invented command",
+                        "Reasoning: inspect\nAction: look"][turn]
+                prompt = json.dumps(messages)
+                return Generation(text, prompt, list(prompt.encode()), list(text.encode()), 0.0)
+
+        for method_name in ("icl", "ascent-icl"):
+            with self.subTest(method=method_name):
+                self.config.method = method_name
+                self.config.output_dir = str(self.root / method_name)
+                self.config.icl_nothing_happen_only = True
+                self.config.max_steps = 3
+                self.config.window_episodes = 3
+                run(self.config, backend_factory=Backend, env_factory=Env)
+                state, _ = load_checkpoint(Path(self.config.output_dir))
+                self.assertEqual(len(state["method"]["history"]), 2)
+                for messages in state["method"]["history"]:
+                    self.assertEqual(len(messages), 4)
+                    self.assertTrue(messages[0]["content"].startswith("BEGIN EPISODE"))
+                    self.assertEqual(messages[1]["content"], "Reasoning: try\nAction: invented command")
+                    self.assertIn("Nothing happens.", messages[2]["content"])
+                    self.assertIn("Success: True", messages[3]["content"])
+                run(self.config, resume=True, backend_factory=Backend, env_factory=Env)
+                restored, _ = load_checkpoint(Path(self.config.output_dir))
+                self.assertEqual(restored["method"], state["method"])
+                self.config.icl_nothing_happen_only = False
+                with self.assertRaisesRegex(ValueError, "Resume configuration differs"):
+                    run(self.config, resume=True, backend_factory=Backend, env_factory=Env)
+
+    def test_icl_nothing_happen_only_window_and_isolation(self):
+        config = Config(method="icl", icl_nothing_happen_only=True, window_episodes=3)
+        method = Method(config, MockBackend(config))
+
+        def episode(name, feedback="Nothing happens.", error=None, executed="invented"):
+            return Episode(name, "pick", 0,
+                           messages=[{"role": "user", "content": name},
+                                     {"role": "assistant", "content": "invented"},
+                                     {"role": "user", "content": feedback},
+                                     {"role": "user", "content": "terminal"}],
+                           steps=[dict(format_error=error, executed_action=executed,
+                                       feedback=feedback, admissible_commands=[])],
+                           outcome={"success": False})
+
+        for name, feedback in (("first", "Nothing happens."), ("second", " NOTHING HAPPENS "),
+                               ("third", "nothing happens")):
+            e = episode(name, feedback)
+            method.observe_episode(e)
+            e.messages[0]["content"] = "mutated"
+        self.assertEqual([m[0]["content"] for m in method.history], ["second", "third"])
+        saved = copy.deepcopy(method.history)
+        for e in (episode("positive", "Found it."), episode("substring", "You see nothing happens here."),
+                  episode("format", error="bad format"), episode("unexecuted", executed=None)):
+            method.observe_episode(e)
+        self.assertEqual(method.history, saved)
+        current = episode("current", "Found it.")
+        context = method.build_context(current)
+        self.assertEqual(context[-4:], current.messages)
+        context[-1]["content"] = "mutated context"
+        self.assertEqual(current.messages[-1]["content"], "terminal")
+        method.begin_task("pick")
+        config.memory_scope = "task_type"
+        self.assertTrue(method.begin_task("heat"))
+        self.assertEqual(method.history, [])
+        config.window_episodes = 1
+        method.observe_episode(episode("no history"))
+        self.assertEqual(method.history, [])
+        config.memory_scope = "stream"
+        config.icl_nothing_happen_only = "false"
+        with self.assertRaisesRegex(ValueError, "icl_nothing_happen_only"):
+            config.validate()
+        config.icl_nothing_happen_only = True
+        config.icl_success_only = True
+        with self.assertRaisesRegex(ValueError, "mutually exclusive"):
+            config.validate()
+
     def test_icl_success_only_window_and_isolation(self):
         config = Config(method="icl", icl_success_only=True, window_episodes=3)
         method = Method(config, MockBackend(config))
@@ -688,6 +774,7 @@ class ProtocolTests(unittest.TestCase):
         root = Path(self.config.output_dir)
         saved = json.loads((root / "config.json").read_text())
         saved.pop("icl_success_only")
+        saved.pop("icl_nothing_happen_only")
         saved.pop("checkpoint_interval")
         saved.pop("cheatsheet_max_new_tokens")
         (root / "config.json").write_text(json.dumps(saved))

@@ -79,6 +79,7 @@ class Config:
     action_mode: str = "admissible"
     window_episodes: int = 4
     icl_success_only: bool = False  # only valid interactions from successful episodes
+    icl_nothing_happen_only: bool = False  # only executed actions returning Nothing happens.
     max_steps: int = 50
     output_dir: str = "runs/experiment"
     cheatsheet_max_new_tokens: int = 2048
@@ -125,6 +126,10 @@ class Config:
             raise ValueError("Unknown method")
         if not isinstance(self.icl_success_only, bool):
             raise ValueError("icl_success_only must be a boolean")
+        if not isinstance(self.icl_nothing_happen_only, bool):
+            raise ValueError("icl_nothing_happen_only must be a boolean")
+        if self.icl_success_only and self.icl_nothing_happen_only:
+            raise ValueError("icl_success_only and icl_nothing_happen_only are mutually exclusive")
         if self.action_mode not in ("free", "admissible"):
             raise ValueError("Unknown action_mode")
         if self.stream.order not in ("shuffled", "task_blocked"):

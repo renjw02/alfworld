@@ -104,7 +104,12 @@ done
 无效动作的 reasoning/action 及对应反馈一起移除，保留初始任务观察、有效动作及反馈和终局信息。
 当前局仍使用完整交互历史，原始 episode 日志和参数更新逻辑不变。
 默认 `false` 保持保存所有轨迹的行为；`--no-icl-success-only` 可覆盖 YAML 中的开启设置。
-所有历史保留 reasoning、action、观察、分数、格式反馈和终局反馈。
+`icl` 和 `ascent-icl` 也可设置 `icl_nothing_happen_only: true`（命令行 `--icl-nothing-happen-only`），
+与 `icl_success_only` 互斥。历史只保留实际执行且返回 `Nothing happens.` 的 reasoning/action 和对应反馈，
+不要求 episode 成功，也不要求动作属于 admissible commands；匹配忽略大小写、首尾空白和末尾句点。
+保留初始任务观察和终局信息；没有匹配交互的 episode 不占窗口，最多保留最近 K−1 个非空 episode。
+当前 episode 的交互仍完整保留，原始日志和参数更新逻辑不变。
+默认 `false`；`--no-icl-nothing-happen-only` 可覆盖 YAML 中的开启设置。
 每个方法在独立输出目录从同一初始模型开始。默认 `memory_scope: stream`，
 切换任务类型时不清除历史或参数。
 

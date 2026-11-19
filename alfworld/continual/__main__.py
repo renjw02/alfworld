@@ -26,6 +26,8 @@ def main():
     parser.add_argument("--window-episodes", type=int)
     parser.add_argument("--icl-success-only", action=argparse.BooleanOptionalAction, default=None,
                         help="Keep only valid interactions from successful episodes in ICL history")
+    parser.add_argument("--icl-nothing-happen-only", action=argparse.BooleanOptionalAction, default=None,
+                        help="Keep only interactions returning Nothing happens. in ICL history")
     parser.add_argument("--memory-scope", choices=["stream", "task_type"])
     parser.add_argument("--checkpoint-interval", type=int,
                         help="Save training state every N episodes (default: 10), and at completion")
@@ -44,7 +46,7 @@ def main():
             parser.error("--kl-direction requires ascent, ascent-icl, or tt-opsd")
         config.ascent.kl_direction = args.kl_direction
     for name in ("method", "action_mode", "output_dir", "max_steps", "window_episodes", "checkpoint_interval",
-                 "cheatsheet_max_new_tokens", "memory_scope", "icl_success_only"):
+                 "cheatsheet_max_new_tokens", "memory_scope", "icl_success_only", "icl_nothing_happen_only"):
         value = getattr(args, name)
         if value is not None:
             setattr(config, name, value)

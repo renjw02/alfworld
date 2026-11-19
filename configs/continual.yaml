@@ -3,6 +3,7 @@ method: memoryless                 # memoryless | icl | dc-cumulative | history-
 action_mode: admissible            # provide the current environment's exact valid commands
 window_episodes: 4                 # includes the current episode
 icl_success_only: false             # only valid interactions from successful episodes
+icl_nothing_happen_only: false       # only historical actions returning Nothing happens.; exclusive with success-only
 max_steps: 50                      # counts malformed generations too
 output_dir: runs/experiment
 cheatsheet_max_new_tokens: 2048    # DC-Cumulative: one curator call after each episode

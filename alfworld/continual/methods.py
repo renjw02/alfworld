@@ -80,6 +80,14 @@ class Method:
                             messages.extend(episode.messages[1 + 2 * index:3 + 2 * index])
                     if messages:
                         messages = [episode.messages[0], *messages, episode.messages[-1]]
+            elif self.config.icl_nothing_happen_only:
+                from .negative_ul import is_negative
+                messages = []
+                for index, step in enumerate(episode.steps):
+                    if is_negative(step):
+                        messages.extend(episode.messages[1 + 2 * index:3 + 2 * index])
+                if messages:
+                    messages = [episode.messages[0], *messages, episode.messages[-1]]
             if messages:
                 self.history.append(copy.deepcopy(messages))
             self.history = self.history[-keep:] if keep else []
