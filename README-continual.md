@@ -68,6 +68,21 @@ done
 
 `--data-dir` 或 `ALFWORLD_DATA` 可指定包含 `json_2.1.1/` 的数据目录。
 默认每种方法都从基座重新开始；运行中断后用相同命令加 `--resume`。
+扩展的 **heat&place 200** 使用 `configs/continual-heat-place-200.yaml`，清单为
+`configs/manifests/heat_place_200.seed42.json`：保留原 39 个任务，从训练集补入 161 个，
+全部仍为 heat&place。采样优先补足当前任务数最少的房间，再优先不同的房间/物体/目标组合，
+最后兼顾物体和放置目标的数量；seed=42 固定打破平局并打乱最终顺序。
+最终覆盖 28 个房间：原 valid_unseen 的 FloorPlan10 保留 23 个，FloorPlan4 只有 5 个
+可用训练任务，其余 26 个房间各 6–7 个。原 39-task 配置保持不变。
+此清单混合训练与验证数据，用于 streaming adaptation，不能作为纯 held-out 验证集成绩。
+清单的 `sampling` 字段记录房间、物体和放置目标分布；可在仓库根目录重建：
+
+```bash
+python scripts/sample_heat_place.py
+python -m alfworld.continual --config configs/continual-heat-place-200.yaml \
+  --method icl --output-dir runs/heat-place-200-icl
+```
+
 要换 seed/order，可将配置的 `stream.manifest` 设为 `null` 自动生成新顺序，
 或在其他现有配置上添加 `--split valid_heat_place --seed <seed>`。
 该别名要求 seen/unseen 两个来源均存在，不会在缺失一个来源时静默运行缩小的数据集。

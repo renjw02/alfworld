@@ -9,13 +9,16 @@ from .config import STREAM_SPLITS
 
 
 HEAT_PLACE_SPLIT = "valid_heat_place"
+HEAT_PLACE_SPLITS = (HEAT_PLACE_SPLIT, "heat_place_200")
 HEAT_PLACE_TASK = "pick_heat_then_place_in_recep"
 
 
 def source_splits(config):
     if config.split not in STREAM_SPLITS:
         raise ValueError(f"Unknown stream split: {config.split}")
-    return ("valid_seen", "valid_unseen") if config.split == HEAT_PLACE_SPLIT else (config.split,)
+    if config.split == "heat_place_200":
+        return ("valid_seen", "valid_unseen", "train")
+    return ("valid_seen", "valid_unseen") if config.split in HEAT_PLACE_SPLITS else (config.split,)
 
 
 def digest(path):
@@ -27,6 +30,8 @@ def data_root(config):
 
 
 def build_manifest(config):
+    if config.split == "heat_place_200":
+        raise ValueError("heat_place_200 requires a manifest; run scripts/sample_heat_place.py")
     root = data_root(config)
     entries = []
     for source in source_splits(config):
@@ -43,12 +48,12 @@ def build_manifest(config):
             task = json.loads(trajectory.read_text())["task_type"]
             if not data.get("solvable", False) or task not in TASK_TYPES.values():
                 continue
-            if config.split == HEAT_PLACE_SPLIT and task != HEAT_PLACE_TASK:
+            if config.split in HEAT_PLACE_SPLITS and task != HEAT_PLACE_TASK:
                 continue
             entry = {"episode_id": game.parent.relative_to(split).as_posix(),
                      "game": relative, "task_type": task,
                      "sha256": digest(game), "trajectory_sha256": digest(trajectory)}
-            if config.split == HEAT_PLACE_SPLIT:
+            if config.split in HEAT_PLACE_SPLITS:
                 entry.update(source_split=source, episode_id=f"{source}/{entry['episode_id']}")
             entries.append(entry)
         if len(entries) == count_before:
@@ -84,20 +89,22 @@ def validate_manifest(manifest, config):
             raise ValueError("Duplicate episode in manifest")
         seen.add(entry["episode_id"])
         game = (root / entry["game"]).resolve()
-        source = entry.get("source_split") if config.split == HEAT_PLACE_SPLIT else config.split
+        source = entry.get("source_split") if config.split in HEAT_PLACE_SPLITS else config.split
         if source not in sources or not game.is_relative_to(root / "json_2.1.1" / source):
             raise ValueError("Game path outside configured split")
         if digest(game) != entry["sha256"] or digest(game.with_name("traj_data.json")) != entry["trajectory_sha256"]:
             raise ValueError(f"Dataset changed: {entry['game']}")
-        if config.split == HEAT_PLACE_SPLIT:
+        if config.split in HEAT_PLACE_SPLITS:
             expected_id = game.parent.relative_to(root / "json_2.1.1").as_posix()
             if entry["episode_id"] != expected_id:
                 raise ValueError("Heat&place episode_id must include its source split")
             task = json.loads(game.with_name("traj_data.json").read_text())["task_type"]
             if entry["task_type"] != HEAT_PLACE_TASK or task != HEAT_PLACE_TASK:
                 raise ValueError("Non-heat&place task in heat&place manifest")
-    if config.split == HEAT_PLACE_SPLIT and {e["source_split"] for e in manifest["episodes"]} != set(sources):
-        raise ValueError("Heat&place manifest must include both valid_seen and valid_unseen")
+    if config.split in HEAT_PLACE_SPLITS and {e["source_split"] for e in manifest["episodes"]} != set(sources):
+        raise ValueError("Heat&place manifest must include both validation splits and all configured sources")
+    if config.split == "heat_place_200" and len(manifest["episodes"]) != 200:
+        raise ValueError("heat_place_200 requires exactly 200 episodes")
     return manifest
 
 

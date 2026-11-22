@@ -7,7 +7,7 @@ import yaml
 NTP_METHODS = ("history-ntp", "history-ntp-assistant", "history-ntp-assistant-success")
 ASCENT_METHODS = ("ascent", "ascent-icl")
 METHODS = ("memoryless", "icl", "dc-cumulative", *NTP_METHODS, *ASCENT_METHODS, "tt-opsd", "success-only-sft", "sft", "negative-ul", "projected-kl")
-STREAM_SPLITS = ("valid_seen", "valid_unseen", "valid_heat_place")
+STREAM_SPLITS = ("valid_seen", "valid_unseen", "valid_heat_place", "heat_place_200")
 
 
 @dataclass
