@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import copy
 import importlib.metadata
 import json
+import os
 from pathlib import Path
 import random
 import subprocess
@@ -24,7 +25,12 @@ def seed_all(seed, config):
     random.seed(seed)
     np.random.seed(seed)
     if config.model.backend == "hf":
+        # Set before CUDA/cuBLAS initialization and before loading the model.
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
         import torch
+        torch.use_deterministic_algorithms(True, warn_only=False)
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
         torch.manual_seed(seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)

@@ -5,6 +5,14 @@
 结果是在线适应（streaming adaptation）结果，不是冻结模型的标准验证成绩。
 初始实验使用本地 `/data/jiawei/models/Qwen3.5-9B`，仅运行 ALFWorld 文本环境。
 
+HF 后端在模型加载前固定 Python、NumPy、PyTorch 随机种子，并启用
+`torch.use_deterministic_algorithms(True, warn_only=False)`，设置
+`CUBLAS_WORKSPACE_CONFIG=:4096:8`、`cudnn.benchmark=False` 和
+`cudnn.deterministic=True`。推理仍使用 `do_sample=False`。遇到 PyTorch 已知的
+无确定性实现的算子会报错；这些设置可能降低速度，且不保证跨硬件、软件版本、
+GPU 分片方式或第三方自定义 kernel 的逐位复现。旧进程需要重新启动才会生效；
+比较重复实验应从同一初始模型开始，而不是从旧实验的中间 checkpoint 开始。
+
 ## 安装和最小运行
 
 在仓库根目录，使用 Python 3.11+：
