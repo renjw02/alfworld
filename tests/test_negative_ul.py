@@ -192,6 +192,18 @@ class NegativeULTests(unittest.TestCase):
         trainer.train_sample(sample)
         for key, value in second['adapter'].items():
             torch.testing.assert_close(backend.state_dict()['adapter'][key], value, atol=0, rtol=0)
+        backend.load_state_dict(before)
+        cfg.training.negative_ul_steps = 4
+        four = trainer.train_sample(sample)
+        self.assertEqual(four['optimizer_steps'], 4)
+        self.assertEqual(len(four['substeps']), 4)
+        four_state = copy.deepcopy(backend.state_dict())
+        backend.load_state_dict(before)
+        cfg.training.negative_ul_steps = 1
+        for _ in range(4):
+            trainer.train_sample(sample)
+        for key, value in four_state['adapter'].items():
+            torch.testing.assert_close(backend.state_dict()['adapter'][key], value, atol=0, rtol=0)
         self.assertFalse(backend.model.training)
         self.assertTrue(backend.model.config.use_cache)
 

@@ -361,7 +361,7 @@ class MockBackend:
         return {"kind": self.config.method, "mock": True, "skipped": skipped,
                 "skip_reason": "no_alternative_candidates" if skipped else None,
                 "optimizer_steps": 0, "simulated_optimizer_steps": (self.config.projected_kl.optimizer_steps
-                    if self.config.method == "projected-kl" else 1) * int(not skipped),
+                    if self.config.method == "projected-kl" else self.config.training.negative_ul_steps) * int(not skipped),
                 "candidates": candidates, "seconds": 0.0, "loss": None}
 
     def train_episode(self, messages):

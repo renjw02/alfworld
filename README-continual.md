@@ -91,6 +91,16 @@ python -m alfworld.continual --config configs/continual-heat-place-200.yaml \
   --method icl --output-dir runs/heat-place-200-icl
 ```
 
+200-task 流还提供以下单次实验配置（沿用 seed=42、50 步上限和相同 manifest）：
+
+- `configs/continual-heat-place-200-dc-cumulative.yaml`：DC，无参数更新。
+- `configs/continual-heat-place-200-success-only-sft.yaml`：`sft.updates_per_batch: 4`，每个有效 batch（2×4 个样本，末批可不足）连续更新四次。
+- `configs/continual-heat-place-200-negative-ul.yaml`：`training.negative_ul_steps: 4`，每次可训练负反馈更新四次，每步重新计算候选分数。
+- `configs/continual-heat-place-200-projected-kl.yaml`：`projected_kl.optimizer_steps: 4`，每次可训练负反馈更新四次，四步共享更新前的投影目标。
+
+前两个新增训练步数字段默认均为 1，以保留已有实验行为；它们与 whole-trajectory `sft.optimizer_steps` 独立。
+所有 HF 方法共用严格确定性初始化，实际开关值记录在每次运行的 `traces/<timestamp>/determinism.json`。
+
 要换 seed/order，可将配置的 `stream.manifest` 设为 `null` 自动生成新顺序，
 或在其他现有配置上添加 `--split valid_heat_place --seed <seed>`。
 该别名要求 seen/unseen 两个来源均存在，不会在缺失一个来源时静默运行缩小的数据集。

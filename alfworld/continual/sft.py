@@ -161,39 +161,40 @@ class SFTTrainer(NTPTrainer):
                 effective_batch = batch_size * self.sft_config.gradient_accumulation_steps
                 for start in range(0, len(samples), effective_batch):
                     window = samples[start:start + effective_batch]
-                    self.optimizer.zero_grad(set_to_none=True)
-                    window_loss = 0.0
-                    micro_batches = 0
-                    for offset in range(0, len(window), batch_size):
-                        batch = window[offset:offset + batch_size]
-                        inputs, mask, positions, targets = self.collate(batch, device)
-                        # Left padding aligns response ends. Only response positions
-                        # get vocabulary logits; shorter responses mask extra positions.
-                        result = self.model(input_ids=inputs, attention_mask=mask,
-                                            position_ids=positions, logits_to_keep=targets.shape[1],
-                                            use_cache=False)
-                        token_losses = torch.nn.functional.cross_entropy(
-                            result.logits.float().transpose(1, 2), targets,
-                            ignore_index=-100, reduction="none")
-                        response_losses = token_losses.sum(-1) / (targets != -100).sum(-1)
-                        # Actual sample count handles both a short micro-batch and
-                        # the final partial accumulation window without underweighting.
-                        loss = response_losses.sum() / len(window)
-                        if not torch.isfinite(loss):
-                            raise RuntimeError("Non-finite SFT loss; episode update not committed")
-                        loss.backward()
-                        window_loss += loss.item()
-                        micro_batches += 1
-                        del loss, response_losses, token_losses, result, inputs, mask, positions, targets
-                    norm = torch.nn.utils.clip_grad_norm_(self.parameters, self.config.max_grad_norm,
-                                                          error_if_nonfinite=True)
-                    self.optimizer.step()
-                    self.steps += 1
-                    records.append({"sample_steps": [s["step"] for s in window], "loss": window_loss,
-                                    "samples": len(window), "micro_batches": micro_batches,
-                                    "gradient_norm": norm.item(), "tokens": sum(len(s["input_ids"]) for s in window),
-                                    "target_tokens": sum(s["target_tokens"] for s in window),
-                                    "optimizer_step": self.steps})
+                    for _ in range(self.sft_config.updates_per_batch):
+                        self.optimizer.zero_grad(set_to_none=True)
+                        window_loss = 0.0
+                        micro_batches = 0
+                        for offset in range(0, len(window), batch_size):
+                            batch = window[offset:offset + batch_size]
+                            inputs, mask, positions, targets = self.collate(batch, device)
+                            # Left padding aligns response ends. Only response positions
+                            # get vocabulary logits; shorter responses mask extra positions.
+                            result = self.model(input_ids=inputs, attention_mask=mask,
+                                                position_ids=positions, logits_to_keep=targets.shape[1],
+                                                use_cache=False)
+                            token_losses = torch.nn.functional.cross_entropy(
+                                result.logits.float().transpose(1, 2), targets,
+                                ignore_index=-100, reduction="none")
+                            response_losses = token_losses.sum(-1) / (targets != -100).sum(-1)
+                            # Actual sample count handles both a short micro-batch and
+                            # the final partial accumulation window without underweighting.
+                            loss = response_losses.sum() / len(window)
+                            if not torch.isfinite(loss):
+                                raise RuntimeError("Non-finite SFT loss; episode update not committed")
+                            loss.backward()
+                            window_loss += loss.item()
+                            micro_batches += 1
+                            del loss, response_losses, token_losses, result, inputs, mask, positions, targets
+                        norm = torch.nn.utils.clip_grad_norm_(self.parameters, self.config.max_grad_norm,
+                                                              error_if_nonfinite=True)
+                        self.optimizer.step()
+                        self.steps += 1
+                        records.append({"sample_steps": [s["step"] for s in window], "loss": window_loss,
+                                        "samples": len(window), "micro_batches": micro_batches,
+                                        "gradient_norm": norm.item(), "tokens": sum(len(s["input_ids"]) for s in window),
+                                        "target_tokens": sum(s["target_tokens"] for s in window),
+                                        "optimizer_step": self.steps})
             finally:
                 self.optimizer.zero_grad(set_to_none=True)
                 self.model.gradient_checkpointing_disable()
@@ -206,6 +207,6 @@ class SFTTrainer(NTPTrainer):
                 "gradient_accumulation_steps": self.sft_config.gradient_accumulation_steps,
                 "micro_batches": sum(r["micro_batches"] for r in records),
                 "target_tokens": sum(r["target_tokens"] for r in records),
-                "loss": sum(r["loss"] * r["samples"] for r in records) / len(samples) if records else None,
+                "loss": sum(r["loss"] * r["samples"] for r in records) / sum(r["samples"] for r in records) if records else None,
                 "loss_reduction": "mean_per_response", "records": records,
                 "seconds": time.perf_counter() - started}

@@ -186,6 +186,20 @@ class SFTModelTests(unittest.TestCase):
         self.assertEqual(backend.trainer.train_samples([])['optimizer_steps'],0)
         self.assertTrue(all(p.grad is None for p in backend.trainer.parameters))
 
+        before = copy.deepcopy(backend.state_dict())
+        config.sft.updates_per_batch = 4
+        four = backend.trainer.train_samples(samples[:4])
+        self.assertEqual(four['optimizer_steps'], 4)
+        self.assertEqual(four['samples_trained'], 16)
+        self.assertAlmostEqual(four['loss'], sum(r['loss'] for r in four['records']) / 4)
+        four_state = copy.deepcopy(backend.state_dict())
+        backend.load_state_dict(before)
+        config.sft.updates_per_batch = 1
+        for _ in range(4):
+            backend.trainer.train_samples(samples[:4])
+        for key, value in four_state['adapter'].items():
+            torch.testing.assert_close(backend.state_dict()['adapter'][key], value, atol=0, rtol=0)
+
     def test_real_loss_lora_resume_and_task_reset(self):
         import torch
         from transformers import Qwen3_5TextConfig,Qwen3_5ForCausalLM

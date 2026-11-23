@@ -95,23 +95,30 @@ class NegativeULTrainer(NTPTrainer):
         self.model.config.use_cache = False
         self.optimizer.zero_grad(set_to_none=True)
         try:
-            # Exact two-pass chain rule: first compute dL/dz for ALL candidates,
-            # then recompute each z with gradients. Only one graph lives at once.
-            # Dropout=0 and no intervening optimizer step make both passes equal.
-            with torch.no_grad():
-                scores = torch.stack([self.score(prefix, target) for target in targets])
-            scores.requires_grad_(True)
-            loss = candidate_loss(scores, sample["negative_index"])
-            if not torch.isfinite(scores).all() or not torch.isfinite(loss):
-                raise RuntimeError("Non-finite Negative-UL scores/loss")
-            coefficients, = torch.autograd.grad(loss, scores)
-            for target, coefficient in zip(targets, coefficients):
-                (self.score(prefix, target) * coefficient).backward()
-            norm = torch.nn.utils.clip_grad_norm_(self.parameters, self.config.max_grad_norm,
-                                                  error_if_nonfinite=True)
-            self.optimizer.step()
-            self.steps += 1
-            return {"skipped": False, "optimizer_steps": 1, "total_optimizer_steps": self.steps,
+            records = []
+            for _ in range(self.config.negative_ul_steps):
+                self.optimizer.zero_grad(set_to_none=True)
+                # Exact two-pass chain rule: first compute dL/dz for ALL candidates,
+                # then recompute each z with gradients. Only one graph lives at once.
+                # Dropout=0 and no intervening optimizer step make both passes equal.
+                with torch.no_grad():
+                    scores = torch.stack([self.score(prefix, target) for target in targets])
+                scores.requires_grad_(True)
+                loss = candidate_loss(scores, sample["negative_index"])
+                if not torch.isfinite(scores).all() or not torch.isfinite(loss):
+                    raise RuntimeError("Non-finite Negative-UL scores/loss")
+                coefficients, = torch.autograd.grad(loss, scores)
+                for target, coefficient in zip(targets, coefficients):
+                    (self.score(prefix, target) * coefficient).backward()
+                norm = torch.nn.utils.clip_grad_norm_(self.parameters, self.config.max_grad_norm,
+                                                      error_if_nonfinite=True)
+                self.optimizer.step()
+                self.steps += 1
+                records.append({"optimizer_step": self.steps, "loss": loss.item(),
+                                "candidate_log_probs": scores.detach().tolist(),
+                                "negative_probability": scores.detach().softmax(0)[sample["negative_index"]].item(),
+                                "gradient_norm": norm.item()})
+            return {"skipped": False, "optimizer_steps": len(records), "substeps": records, "total_optimizer_steps": self.steps,
                     "loss": loss.item(), "candidate_log_probs": scores.detach().tolist(),
                     "negative_probability": scores.detach().softmax(0)[sample["negative_index"]].item(),
                     "gradient_norm": norm.item(), "seconds": time.perf_counter() - started}

@@ -36,6 +36,7 @@ class ModelConfig:
 
 @dataclass
 class TrainingConfig:
+    negative_ul_steps: int = 1  # updates per eligible negative feedback
     rank: int = 16
     alpha: int = 32
     dropout: float = 0.0
@@ -60,6 +61,7 @@ class AscentConfig:
 
 @dataclass
 class SFTConfig:
+    updates_per_batch: int = 1  # success-only-sft; whole-trajectory sft uses optimizer_steps
     max_seq_tokens: int = 2048
     history_interactions: int = 5
     batch_size: int = 2
@@ -155,6 +157,10 @@ class Config:
             if any(not math.isfinite(getattr(self.training, name))
                    for name in ("learning_rate", "weight_decay", "max_grad_norm")):
                 raise ValueError("Action-level optimizer settings must be finite")
+        if (isinstance(self.training.negative_ul_steps, bool)
+                or not isinstance(self.training.negative_ul_steps, int)
+                or self.training.negative_ul_steps < 1):
+            raise ValueError("training.negative_ul_steps must be a positive integer")
         steps = self.projected_kl.optimizer_steps
         if isinstance(steps, bool) or not isinstance(steps, int) or steps < 1:
             raise ValueError("projected_kl.optimizer_steps must be a positive integer")
@@ -193,7 +199,7 @@ class Config:
             raise ValueError("learning_rate and max_grad_norm must be positive")
         if self.training.weight_decay < 0:
             raise ValueError("weight_decay must be nonnegative")
-        for name, minimum in (("max_seq_tokens", 2), ("history_interactions", 0),
+        for name, minimum in (("updates_per_batch", 1), ("max_seq_tokens", 2), ("history_interactions", 0),
                               ("batch_size", 1), ("gradient_accumulation_steps", 1),
                               ("optimizer_steps", 1), ("logits_chunk_tokens", 1)):
             value = getattr(self.sft, name)

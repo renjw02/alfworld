@@ -199,6 +199,8 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             saved_config.setdefault("ascent", asdict(AscentConfig()))
             saved_config["ascent"].setdefault("kl_direction", "forward")
             saved_config.setdefault("sft", asdict(SFTConfig()))
+            saved_config["sft"].setdefault("updates_per_batch", 1)
+            saved_config["training"].setdefault("negative_ul_steps", 1)
             # Pre-batching SFT runs used one update per sample. Do not silently
             # resume them with the new effective batch size.
             old_sft = saved_config.get("method") == "success-only-sft"
@@ -239,6 +241,17 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
         })
         print(f"Execution traces: {trace_root}", flush=True)
         seed_all(config.stream.seed, config)
+        if config.model.backend == "hf":
+            import torch
+            write_json(trace_root / "determinism.json", {
+                "algorithms_enabled": torch.are_deterministic_algorithms_enabled(),
+                "warn_only": torch.is_deterministic_algorithms_warn_only_enabled(),
+                "cudnn_benchmark": torch.backends.cudnn.benchmark,
+                "cudnn_deterministic": torch.backends.cudnn.deterministic,
+                "cublas_workspace_config": os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
+                "pythonhashseed": os.environ.get("PYTHONHASHSEED"),
+                "seed": config.stream.seed,
+            })
         backend = backend_factory(config)
         write_json(trace_root / "placement.json", {
             "device": config.model.device, "devices": config.model.devices,
