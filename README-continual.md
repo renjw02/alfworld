@@ -692,3 +692,33 @@ Projected-KL 是本组合目标的描述性命名。
 一次反馈完成全部子步后版本加一，真实 optimizer steps 单独累计；mock 只记录模拟步数。
 终局负反馈也更新，episode 结束仅汇总。跨局保留参数和优化器，不累计坏动作或跨局 ICL。
 恢复沿用 episode 边界事务 checkpoint，未提交 episode 重跑，不支持局内恢复。
+
+## Episode-end SFT + Negative-UL
+
+`method: sft-negative-ul` 在每局结束后联合更新，成功和失败局均参与；局内参数固定。
+完整 trajectory 保留所有历史，仅格式合法、动作已执行且反馈不是 `Nothing happens`
+的 assistant（Reasoning、Action、EOS）计算正向 CE。此方法不额外检查 admissibility
+或 observation 是否相同；无效响应、user 和模板位置均 mask。
+
+负样本沿用 `negative-ul` 的候选集合归一化动作 UL，context 包含动作前历史及本次
+Reasoning/`Action:`，不包含该动作返回的反馈。候选动作及 EOS 的 log-prob 求和后
+softmax；负 loss 为 `-log(1-q_bad)`。单候选或 token 无法对齐的样本记录跳过原因。
+同一状态段内同一失败动作只保留第一次的 context：`Nothing happens` 和格式错误
+不推进状态段，其他已执行动作开启新段。不同无效动作分别保留；去重仅限当前局。
+这是无效动作循环的近似去重，不识别经有效动作离开后返回同一真实状态的循环。
+
+`loss = pos_loss + training.lambda_neg * neg_loss`，正项按有效 token 平均，负项按
+去重后可训练的负动作样本平均。每次联合更新在同一参数下累积全部梯度，统一裁剪并
+执行一次 optimizer step；`sft.optimizer_steps` 控制每局重复次数，
+`training.negative_ul_steps` 不用于此方法。无正样本可仅做 UL，无负样本可仅做 SFT，
+均无有效目标则跳过；`lambda_neg: 0` 禁用负项。要求 dropout=0、单 GPU、完整上下文，
+超长时明确报错而不截断。
+
+Heat & place 200 配置复用固定的 `heat_place_200.seed42.json`，默认 lambda=1、每局
+2 次联合更新。`update.json` 保存正负 loss、负样本及跳过原因、原始/去重/可训练数量；
+摘要也记录 loss 和负样本计数。
+
+```bash
+.venv/bin/python -m alfworld.continual \
+  --config configs/continual-heat-place-200-sft-negative-ul.yaml
+```

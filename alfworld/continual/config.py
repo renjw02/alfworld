@@ -6,7 +6,7 @@ import yaml
 
 NTP_METHODS = ("history-ntp", "history-ntp-assistant", "history-ntp-assistant-success")
 ASCENT_METHODS = ("ascent", "ascent-icl")
-METHODS = ("memoryless", "icl", "dc-cumulative", *NTP_METHODS, *ASCENT_METHODS, "tt-opsd", "success-only-sft", "sft", "negative-ul", "projected-kl")
+METHODS = ("memoryless", "icl", "dc-cumulative", *NTP_METHODS, *ASCENT_METHODS, "tt-opsd", "success-only-sft", "sft", "sft-negative-ul", "negative-ul", "projected-kl")
 STREAM_SPLITS = ("valid_seen", "valid_unseen", "valid_heat_place", "heat_place_200")
 
 
@@ -36,6 +36,7 @@ class ModelConfig:
 
 @dataclass
 class TrainingConfig:
+    lambda_neg: float = 1.0
     negative_ul_steps: int = 1  # updates per eligible negative feedback
     rank: int = 16
     alpha: int = 32
@@ -97,7 +98,7 @@ class Config:
 
     @property
     def trains_parameters(self):
-        return self.is_ntp or self.is_distillation or self.method in ("success-only-sft", "sft", "negative-ul", "projected-kl")
+        return self.is_ntp or self.is_distillation or self.method in ("success-only-sft", "sft", "sft-negative-ul", "negative-ul", "projected-kl")
 
     @property
     def is_tt_opsd(self):
@@ -148,9 +149,9 @@ class Config:
             raise ValueError("Unknown model backend")
         if self.model.context_overflow not in ("truncate_oldest", "error"):
             raise ValueError("Unknown model.context_overflow policy")
-        if self.method == "sft" and self.model.context_overflow != "error":
+        if self.method in ("sft", "sft-negative-ul") and self.model.context_overflow != "error":
             raise ValueError("Whole-trajectory sft requires model.context_overflow=error")
-        if self.method in ("negative-ul", "projected-kl"):
+        if self.method in ("negative-ul", "projected-kl", "sft-negative-ul"):
             import math
             if self.training.dropout != 0:
                 raise ValueError("Action-level two-pass scoring requires dropout=0")
@@ -161,6 +162,11 @@ class Config:
                 or not isinstance(self.training.negative_ul_steps, int)
                 or self.training.negative_ul_steps < 1):
             raise ValueError("training.negative_ul_steps must be a positive integer")
+        import math
+        if (isinstance(self.training.lambda_neg, bool)
+                or not isinstance(self.training.lambda_neg, (int, float))
+                or not math.isfinite(self.training.lambda_neg) or self.training.lambda_neg < 0):
+            raise ValueError("training.lambda_neg must be finite and nonnegative")
         steps = self.projected_kl.optimizer_steps
         if isinstance(steps, bool) or not isinstance(steps, int) or steps < 1:
             raise ValueError("projected_kl.optimizer_steps must be a positive integer")

@@ -10,6 +10,7 @@ from .training import NTPTrainer
 from .ascent import AscentTrainer, success_record, current_episode_training_steps
 from .tt_opsd import turn_records
 from .sft import SFTTrainer, build_samples
+from .sft_negative_ul import JointTrainer, build_joint_sample, positive_error, unique_negatives
 from .trajectory_sft import TrajectorySFTTrainer, build_trajectory
 from .context import fit_context
 
@@ -131,6 +132,7 @@ class HFBackend:
             self.trainer = (AscentTrainer(self.model, training) if config.is_distillation
                             else ProjectedKLTrainer(self.model, training, config.projected_kl) if config.method == "projected-kl"
                             else NegativeULTrainer(self.model, training) if config.method == "negative-ul"
+                            else JointTrainer(self.model, training, config.sft) if config.method == "sft-negative-ul"
                             else TrajectorySFTTrainer(self.model, training, config.sft)
                             if config.method == "sft"
                             else SFTTrainer(self.model, training, config.sft,
@@ -237,6 +239,11 @@ class HFBackend:
         return result
 
     def sft_episode(self, episode):
+        if self.config.method == "sft-negative-ul":
+            architecture = getattr(self.model.config, "text_config", self.model.config)
+            sample = build_joint_sample(self.config, episode, self._render, self.tokenizer,
+                                        architecture.max_position_embeddings)
+            return {"kind": self.config.method, **self.trainer.train_joint(sample), **sample}
         if self.config.method == "sft":
             architecture = getattr(self.model.config, "text_config", self.model.config)
             sample = build_trajectory(self.config, episode, self._render, self.tokenizer,
@@ -369,6 +376,16 @@ class MockBackend:
         return {"mock": True, "optimizer_steps": 0, "training_text": json.dumps(messages), "loss": None}
 
     def sft_episode(self, episode):
+        if self.config.method == "sft-negative-ul":
+            negatives, stats = unique_negatives(episode.steps)
+            count = sum(len(candidates_for(s)) > 1 for s in negatives)
+            retained = [s["step"] for s in episode.steps if positive_error(s) is None]
+            active = bool(retained or (count and self.config.training.lambda_neg > 0))
+            self.updates += self.config.sft.optimizer_steps * int(active)
+            return {"kind": self.config.method, "mock": True, "optimizer_steps": 0,
+                    "simulated_optimizer_steps": self.config.sft.optimizer_steps * int(active),
+                    "skipped": not active, "retained_steps": retained, **stats,
+                    "trainable_negative_count": count, "loss": None, "pos_loss": None, "neg_loss": None}
         from .sft import interaction_error
         if self.config.method == "sft":
             retained, rejected = [], []

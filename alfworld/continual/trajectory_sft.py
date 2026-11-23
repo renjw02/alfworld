@@ -6,7 +6,7 @@ from .sft import interaction_error
 from .training import NTPTrainer
 
 
-def build_trajectory(config, episode, render, tokenizer, context_limit):
+def build_trajectory(config, episode, render, tokenizer, context_limit, validity=interaction_error):
     messages = [system_message(config.action_mode), *episode.messages]
     responses = [m["content"] for m in messages if m["role"] == "assistant"]
     if responses != [s["raw_output"] for s in episode.steps]:
@@ -26,7 +26,7 @@ def build_trajectory(config, episode, render, tokenizer, context_limit):
     retained, rejected, targets = [], [], []
     special = set(tokenizer.all_special_ids)
     for step, (start, end) in zip(episode.steps, spans):
-        reason = interaction_error(step)
+        reason = validity(step)
         if reason:
             rejected.append({"step": step["step"], "reason": reason})
             continue

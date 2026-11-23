@@ -161,7 +161,7 @@ def run_episode(config, entry, position, method, log, env_factory=TextEnvironmen
                 log.append({"event": key, "step": step, **update})
             # Preserve both conditioning prefixes and exact generated response tokens.
             episode.steps.append({k: v for k, v in record.items() if k not in
-                                  (("messages", "prompt", "training_messages", "training_prompt") if config.is_distillation or config.method in ("sft", "negative-ul", "projected-kl") else
+                                  (("messages", "prompt", "training_messages", "training_prompt") if config.is_distillation or config.method in ("sft", "sft-negative-ul", "negative-ul", "projected-kl") else
                                    ("messages", "prompt", "input_token_ids", "output_token_ids"))})
             if done or success:
                 break
@@ -201,6 +201,7 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             saved_config.setdefault("sft", asdict(SFTConfig()))
             saved_config["sft"].setdefault("updates_per_batch", 1)
             saved_config["training"].setdefault("negative_ul_steps", 1)
+            saved_config["training"].setdefault("lambda_neg", 1.0)
             # Pre-batching SFT runs used one update per sample. Do not silently
             # resume them with the new effective batch size.
             old_sft = saved_config.get("method") == "success-only-sft"
@@ -314,6 +315,10 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
                 if config.method in ("negative-ul", "projected-kl"):
                     summary.update(negative_feedback_count=update["negative_feedback_count"],
                                    optimizer_steps=update["optimizer_steps"])
+                if config.method == "sft-negative-ul":
+                    summary.update({k: update[k] for k in ("pos_loss", "neg_loss", "loss",
+                        "negative_feedback_count", "unique_negative_count", "duplicate_negative_count",
+                        "trainable_negative_count", "optimizer_steps")})
                 if config.method == "dc-cumulative":
                     summary.update(cheatsheet_version_after=method.cheatsheet_version,
                                    curator_input_tokens=update["input_tokens"],
