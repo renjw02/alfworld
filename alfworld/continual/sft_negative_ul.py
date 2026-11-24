@@ -1,7 +1,7 @@
 """Episode-end positive SFT and state-segment-deduplicated action unlikelihood."""
 import time
 
-from .negative_ul import NegativeULTrainer, build_sample, candidate_loss, is_negative
+from .negative_ul import NegativeULTrainer, build_sample, candidate_loss, is_no_effect
 from .prompting import parse_react
 from .trajectory_sft import TrajectorySFTTrainer, build_trajectory
 
@@ -12,7 +12,7 @@ def positive_error(step):
         return 'format_or_truncated'
     if step.get('executed_action') is None or step['executed_action'] != parsed.action:
         return 'unexecuted_or_misaligned'
-    return 'no_effect' if is_negative(step) else None
+    return 'no_effect' if is_no_effect(step) else None
 
 
 def unique_negatives(steps):
@@ -21,7 +21,7 @@ def unique_negatives(steps):
     seen, retained = set(), []
     segment = raw = duplicates = 0
     for step in steps:
-        if is_negative(step):
+        if is_no_effect(step):
             raw += 1
             key = (segment, step['executed_action'])
             if key in seen:

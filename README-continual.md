@@ -628,9 +628,12 @@ uv run --locked --extra continual python -m alfworld.continual \
 
 ## Negative Unlikelihood（Negative-UL）
 
-`negative-ul` 在每个实际执行且返回 `Nothing happens` 的步骤后立即更新一次 LoRA，
-下一步使用更新后的参数。反馈匹配忽略大小写、首尾空白和末尾句点；格式错误、未执行动作、
-普通反馈、仅 observation 未变化或整局失败均不会单独触发更新。当前局保留完整历史，
+`negative-ul` 和 `projected-kl` 的有效动作必须同时满足：属于执行前的
+`admissible_commands`、反馈不是 `Nothing happen(s)`、执行后的原始 observation 与执行前不同。
+实际执行的动作只要违反任一条件，就触发负反馈更新；`negative_feedback_reasons` 记录
+`inadmissible_action`、`nothing_happens`、`unchanged_observation`（可同时出现）。
+格式错误和未执行动作不作为动作候选训练；与上一条原始 observation 精确比较，不比较提示词
+或命令列表。当前局保留完整历史，
 跨局仅保留参数和优化器，不增加跨局 ICL。终局负反馈也更新，episode 结束不重复训练。
 
 候选集合是**执行前**的 `admissible_commands` 去重后补入实际负动作。所有候选共用
@@ -640,7 +643,8 @@ uv run --locked --extra continual python -m alfworld.continual \
 这是单负动作的集合归一化 UL，不是逐 token UL；其余候选不被标注为正确动作。
 本次环境反馈不进入评分输入。单候选或无法可靠对齐生成 token 的步骤明确记录跳过原因。
 
-默认沿用 `training`：all-linear LoRA（排除 lm_head）、rank=16、alpha=32、dropout=0、
+这两个方法使用 FFN-only LoRA（`gate_proj`、`up_proj`、`down_proj`），不挂注意力层或 lm_head；
+rank=16、alpha=32、dropout=0、
 AdamW lr=1e-5、weight decay=0、梯度裁剪=1，每次负反馈一个 optimizer step。
 首版仅支持单 GPU。评分不截断候选或二次裁剪历史，超过模型上下文容量时明确报错。
 通过两遍精确链式求导控制显存：先计算所有候选分数及 `dL/dz`，再逐候选重算并累积梯度，
@@ -657,11 +661,13 @@ AdamW lr=1e-5、weight decay=0、梯度裁剪=1，每次负反馈一个 optimize
 梯度范数、耗时和模型版本；`episode.json` 保存对应更新，episode 末尾 `update.json` 只做汇总。
 `summary.json` 增加负反馈率、实际 optimizer steps 和训练耗时；mock 更新不计为真实训练。
 恢复沿用 episode 边界事务 checkpoint；崩溃后重跑最近未提交的 episode，不做局内恢复。
+有效性判定已升级为 v2，旧规则 checkpoint 禁止直接 resume，必须使用新输出目录开始实验。
+此规则能识别 observation 不变的检查循环，但不能识别所有改变 observation 的开关/拿放循环。
 
 ## Projected-KL
 
-`projected-kl` 沿用 Negative-UL 的反馈过滤、候选集合和评分输入：每次实际执行后收到
-`Nothing happens`，将本次失败动作作为唯一坏动作。候选分布是完整动作（含 EOS）序列
+`projected-kl` 沿用上述强化有效性判定、FFN-only LoRA、候选集合和评分输入，
+将本次不满足有效性条件的实际动作作为唯一坏动作。候选分布是完整动作（含 EOS）序列
 log-prob 求和后的 softmax，条件包含实际生成的 Reasoning；本次反馈不进入评分输入。
 
 每次更新开始前，用当前 Student 在 `no_grad` 下计算 reference 分数，屏蔽坏动作后

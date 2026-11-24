@@ -55,7 +55,9 @@ class ProjectedKLTests(unittest.TestCase):
         self.assertTrue(cfg.trains_parameters)
         self.assertEqual(cfg.projected_kl.optimizer_steps, 2)
         method = Method(cfg, MockBackend(cfg))
-        self.assertIsNone(method.observe_step({**record(), 'feedback': 'ok'}))
+        self.assertIsNone(method.observe_step({**record(), 'feedback': 'ok',
+            'admissible_commands': [record()['executed_action']],
+            'observation': 'before', 'next_observation': 'after'}))
         skipped = method.observe_step({**record(), 'admissible_commands': []})
         self.assertTrue(skipped['skipped'])
         self.assertEqual(method.version, 0)
@@ -153,6 +155,8 @@ class ProjectedKLTests(unittest.TestCase):
         backend = HFBackend(cfg, Qwen3_5ForCausalLM(architecture), CharTokenizer())
         sample = {'prefix_token_ids': [1, 2, 3], 'candidate_token_ids': [[4, 0], [5, 0], [6, 7, 0]],
                   'negative_index': 0}
+        self.assertTrue(all('.mlp.' in n and n.rsplit('.', 1)[-1] in
+                            {'gate_proj', 'up_proj', 'down_proj'} for n in backend.target_modules))
         trainer = backend.trainer
         before = copy.deepcopy(backend.state_dict())
         result = trainer.train_sample(sample)

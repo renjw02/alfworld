@@ -123,7 +123,9 @@ class HFBackend:
             self.model = get_peft_model(model, LoraConfig(
                 task_type="CAUSAL_LM", r=training.rank,
                 lora_alpha=training.alpha, lora_dropout=training.dropout,
-                target_modules=["down_proj"] if config.is_distillation else "all-linear",
+                target_modules=(["down_proj"] if config.is_distillation else
+                                ["gate_proj", "up_proj", "down_proj"]
+                                if config.method in ("negative-ul", "projected-kl") else "all-linear"),
                 exclude_modules=["lm_head"], bias="none",
             ))
             self.target_modules = [name for name, module in self.model.named_modules() if hasattr(module, "lora_A")]

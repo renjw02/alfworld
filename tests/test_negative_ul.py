@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from alfworld.continual.config import Config
-from alfworld.continual.negative_ul import build_sample, candidate_loss, is_negative
+from alfworld.continual.negative_ul import build_sample, candidate_loss, is_negative, negative_reasons
 
 
 class CharTokenizer:
@@ -29,7 +29,29 @@ class NegativeULTests(unittest.TestCase):
         for feedback in ('Nothing happens.', ' NOTHING HAPPENS ', 'nothing happens'):
             self.assertTrue(is_negative({**step, 'feedback': feedback}))
         for feedback in ('You see nothing happens here.', 'unchanged', 'Success'):
-            self.assertFalse(is_negative({**step, 'feedback': feedback}))
+            self.assertFalse(is_negative({**step, 'feedback': feedback,
+                                         'admissible_commands': [step['executed_action']],
+                                         'observation': 'before', 'next_observation': 'after'}))
+        good = {**step, 'feedback': 'You see a mug.', 'observation': 'A room.',
+                'next_observation': 'You see a mug.', 'admissible_commands': [step['executed_action']]}
+        self.assertEqual(negative_reasons(good), [])
+        self.assertEqual(negative_reasons({**good, 'next_observation': 'A room.'}),
+                         ['unchanged_observation'])
+        self.assertEqual(negative_reasons({**good, 'admissible_commands': ['look']}),
+                         ['inadmissible_action'])
+        self.assertEqual(negative_reasons({**good, 'feedback': 'Nothing happen.'}),
+                         ['nothing_happens'])
+        for method_name in ('negative-ul', 'projected-kl'):
+            from alfworld.continual.methods import Method
+            from alfworld.continual.model import MockBackend
+            cfg = Config(method=method_name)
+            method = Method(cfg, MockBackend(cfg))
+            for bad in ({**good, 'next_observation': 'A room.',
+                         'admissible_commands': [step['executed_action'], 'look']},
+                        {**good, 'admissible_commands': ['look']}):
+                self.assertIsNotNone(method.observe_step(bad))
+                self.assertTrue(bad['negative_feedback_reasons'])
+            self.assertIsNone(method.observe_step(good))
         self.assertFalse(is_negative({**step, 'executed_action': None}))
         self.assertFalse(is_negative({**step, 'format_error': 'bad'}))
         sample, reason = build_sample(step, CharTokenizer(), 1000)
@@ -85,7 +107,9 @@ class NegativeULTests(unittest.TestCase):
         ep = Episode('test', 'heat', 0, steps=[step])
         self.assertEqual(method.observe_episode(ep)['negative_feedback_count'], 1)
         self.assertEqual(method.version, 1)
-        self.assertIsNone(method.observe_step({**record(), 'feedback': 'ok'}))
+        self.assertIsNone(method.observe_step({**record(), 'feedback': 'ok',
+            'admissible_commands': [record()['executed_action']],
+            'observation': 'before', 'next_observation': 'after'}))
         cfg.training.dropout = .1
         with self.assertRaisesRegex(ValueError, 'dropout'):
             cfg.validate()
@@ -148,6 +172,13 @@ class NegativeULTests(unittest.TestCase):
             self.assertEqual(seen, [0, 1, 2, 3])
             self.assertEqual(resumed['method'], continuous['method'])
             self.assertEqual(resumed['backend'], continuous['backend'])
+            metadata_path = Path(cfg.output_dir) / 'metadata.json'
+            saved = json.loads(metadata_path.read_text())
+            saved.pop('action_negative_feedback')
+            metadata_path.write_text(json.dumps(saved))
+            with self.assertRaisesRegex(ValueError, 'Negative feedback definition changed'):
+                run(cfg, resume=True, backend_factory=Backend, env_factory=Env)
+
 
     def test_tiny_model_update_restore(self):
         import torch
@@ -170,6 +201,9 @@ class NegativeULTests(unittest.TestCase):
         backend = HFBackend(cfg, Qwen3_5ForCausalLM(architecture), CharTokenizer())
         sample = {'prefix_token_ids': [1, 2, 3], 'candidate_token_ids': [[4, 0], [5, 0]],
                   'negative_index': 0}
+        self.assertEqual(len(backend.target_modules), 3 * architecture.num_hidden_layers)
+        self.assertTrue(all('.mlp.' in n and n.rsplit('.', 1)[-1] in
+                            {'gate_proj', 'up_proj', 'down_proj'} for n in backend.target_modules))
         trainer = backend.trainer
         before = copy.deepcopy(backend.state_dict())
         result = trainer.train_sample(sample)

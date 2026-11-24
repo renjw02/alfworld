@@ -6,9 +6,34 @@ from .prompting import parse_react
 from .training import NTPTrainer
 
 
-def is_negative(step):
+def is_no_effect(step):
     return (step.get("format_error") is None and step.get("executed_action") is not None
-            and step.get("feedback", "").strip().lower().rstrip(".") == "nothing happens")
+            and step.get("feedback", "").strip().lower().rstrip(".! ") in
+            ("nothing happen", "nothing happens"))
+
+
+def negative_reasons(step):
+    """An executed action must be admissible, change observation, and not be a no-op.
+
+    Compare the environment's raw observations, not the formatted prompt containing
+    the admissible-command list. Unexecuted/format-error outputs cannot be trained
+    as action candidates. Missing observations are not evidence of no change.
+    """
+    if step.get("format_error") is not None or step.get("executed_action") is None:
+        return []
+    reasons = []
+    if step["executed_action"] not in step["admissible_commands"]:
+        reasons.append("inadmissible_action")
+    if is_no_effect(step):
+        reasons.append("nothing_happens")
+    if ("observation" in step and "next_observation" in step
+            and step["observation"] == step["next_observation"]):
+        reasons.append("unchanged_observation")
+    return reasons
+
+
+def is_negative(step):
+    return bool(negative_reasons(step))
 
 
 def candidates_for(step):

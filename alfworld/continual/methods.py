@@ -44,8 +44,9 @@ class Method:
     def observe_step(self, record):
         if self.config.method not in ("negative-ul", "projected-kl"):
             return None
-        from .negative_ul import is_negative
-        record["negative_feedback"] = is_negative(record)
+        from .negative_ul import negative_reasons
+        record["negative_feedback_reasons"] = negative_reasons(record)
+        record["negative_feedback"] = bool(record["negative_feedback_reasons"])
         if not record["negative_feedback"]:
             return None
         result = (self.backend.projected_kl_step(record) if self.config.method == "projected-kl"
@@ -81,10 +82,10 @@ class Method:
                     if messages:
                         messages = [episode.messages[0], *messages, episode.messages[-1]]
             elif self.config.icl_nothing_happen_only:
-                from .negative_ul import is_negative
+                from .negative_ul import is_no_effect
                 messages = []
                 for index, step in enumerate(episode.steps):
-                    if is_negative(step):
+                    if is_no_effect(step):
                         messages.extend(episode.messages[1 + 2 * index:3 + 2 * index])
                 if messages:
                     messages = [episode.messages[0], *messages, episode.messages[-1]]

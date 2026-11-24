@@ -78,7 +78,8 @@ def metadata(split="valid_seen"):
         commit, dirty = None, None
     return {"git_commit": commit, "git_dirty": dirty, "packages": packages,
             "python": sys.version, "protocol": f"{split}_streaming_adaptation",
-            "ascent_icl_training_context": "current_episode_v1"}
+            "ascent_icl_training_context": "current_episode_v1",
+            "action_negative_feedback": "admissible_changed_observation_v2"}
 
 
 def run_episode(config, entry, position, method, log, env_factory=TextEnvironment):
@@ -151,8 +152,9 @@ def run_episode(config, entry, position, method, log, env_factory=TextEnvironmen
                           score=score, environment_done=bool(done), success=success,
                           episode_done=bool(done or success or step == config.max_steps))
             if config.method in ("negative-ul", "projected-kl"):
-                from .negative_ul import is_negative
-                record["negative_feedback"] = is_negative(record)
+                from .negative_ul import negative_reasons
+                record["negative_feedback_reasons"] = negative_reasons(record)
+                record["negative_feedback"] = bool(record["negative_feedback_reasons"])
             log.append(record)
             update = method.observe_step(record)
             if update is not None:
@@ -217,6 +219,9 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             if saved_config != current_config:
                 raise ValueError("Resume configuration differs from the saved configuration")
             saved_metadata = json.loads((root / "metadata.json").read_text())
+            if (config.method in ("negative-ul", "projected-kl")
+                    and saved_metadata.get("action_negative_feedback") != "admissible_changed_observation_v2"):
+                raise ValueError("Negative feedback definition changed; start a new run instead of resuming a legacy checkpoint")
             if (config.method == "ascent-icl"
                     and saved_metadata.get("ascent_icl_training_context") != "current_episode_v1"):
                 raise ValueError("ASCENT+ICL training context changed; start a new run instead of resuming a legacy checkpoint")
