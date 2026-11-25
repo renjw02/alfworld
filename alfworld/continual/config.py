@@ -79,6 +79,7 @@ class ProjectedKLConfig:
 @dataclass
 class Config:
     method: str = "memoryless"
+    output_format: str = "react"  # react or action_only (ICL ablation)
     action_mode: str = "admissible"
     window_episodes: int = 4
     icl_success_only: bool = False  # only valid interactions from successful episodes
@@ -125,6 +126,10 @@ class Config:
         return self.method in NTP_METHODS[1:]
 
     def validate(self):
+        if self.output_format not in ("react", "action_only"):
+            raise ValueError("Unknown output_format")
+        if self.output_format == "action_only" and self.method != "icl":
+            raise ValueError("action_only currently supports ICL only")
         if self.method not in METHODS:
             raise ValueError("Unknown method")
         if not isinstance(self.icl_success_only, bool):

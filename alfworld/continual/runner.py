@@ -16,7 +16,7 @@ from .cheatsheet import curator_messages
 from .logging import AttemptLog, commit_checkpoint, load_checkpoint, run_lock, write_json
 from .methods import Method
 from .model import make_backend
-from .prompting import initial_message, observation_message, parse_react, terminal_message, system_message
+from .prompting import initial_message, observation_message, parse_react, parse_action_only, terminal_message, system_message
 from .stream import data_root, prepare_manifest, validate_manifest
 from .types import Episode
 
@@ -103,7 +103,8 @@ def run_episode(config, entry, position, method, log, env_factory=TextEnvironmen
             write_json(log.path / "last_request.json", {"step": step, "messages": messages,
                                                        "model_version": method.version})
             generated = method.backend.generate(messages)
-            parsed = parse_react(generated.text, generated.truncated)
+            parser = parse_action_only if config.output_format == "action_only" else parse_react
+            parsed = parser(generated.text, generated.truncated)
             prior_observation = observation
             prior_commands = commands[:]
             record = {"event": "step", "step": step, "model_version": method.version,
@@ -120,7 +121,7 @@ def run_episode(config, entry, position, method, log, env_factory=TextEnvironmen
             if config.method == "ascent-icl":
                 # Capture before appending this response or feedback: no prior
                 # episodes or future turns may enter the training prefix.
-                local_context = [system_message(config.action_mode), *episode.messages]
+                local_context = [system_message(config.action_mode, config.output_format), *episode.messages]
                 local_messages, local_prompt, local_ids, local_truncation = method.backend.prepare_input(local_context)
                 record.update(training_context_scope="current_episode",
                               training_messages=copy.deepcopy(local_messages), training_prompt=local_prompt,
@@ -131,7 +132,9 @@ def run_episode(config, entry, position, method, log, env_factory=TextEnvironmen
             # Keep raw model output, including malformed output, as the training target.
             episode.messages.append({"role": "assistant", "content": generated.text})
             if parsed.error:
-                feedback = "Format error: " + parsed.error + " Use Reasoning: followed by one final Action: line. No action was executed."
+                expected = ("one Action: line only" if config.output_format == "action_only"
+                            else "Reasoning: followed by one final Action: line")
+                feedback = "Format error: " + parsed.error + f" Use {expected}. No action was executed."
                 episode.messages.append({"role": "user", "content": feedback})
                 done = False
             else:
@@ -188,6 +191,7 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
                 raise ValueError("Output directory already contains a run; use --resume or a new directory")
             saved_config = json.loads((root / "config.json").read_text())
             # Older runs predate this storage-only setting; their checkpoints remain readable.
+            saved_config.setdefault("output_format", "react")
             saved_config.setdefault("checkpoint_interval", 10)
             saved_config.setdefault("cheatsheet_max_new_tokens", 2048)
             saved_config.setdefault("memory_scope", "stream")
@@ -247,7 +251,7 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
         trace_root.mkdir(parents=True, exist_ok=False)
         write_json(trace_root / "invocation.json", {
             "started_at_utc": stamp, "resume": resume, "config": config.to_dict(),
-            "metadata": metadata(config.stream.split), "system_message": system_message(config.action_mode),
+            "metadata": metadata(config.stream.split), "system_message": system_message(config.action_mode, config.output_format),
         })
         print(f"Execution traces: {trace_root}", flush=True)
         seed_all(config.stream.seed, config)

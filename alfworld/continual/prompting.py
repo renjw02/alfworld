@@ -11,8 +11,13 @@ Do not add text after Action. Do not use markdown fences or <think> tags.
 """
 
 
-def system_message(action_mode):
+def system_message(action_mode, output_format="react"):
     text = SYSTEM
+    if output_format == "action_only":
+        text = text.replace(
+            "Reasoning: <briefly explain your reasoning about the current state and next action>\n", "")
+        text = text.replace("Do not add text after Action.",
+                            "Output only the Action line. Do not output reasoning or explanations.")
     if action_mode == "admissible":
         # The actual environment commands are authoritative; don't introduce
         # a competing list of generic syntax examples in this mode.
@@ -34,6 +39,15 @@ def parse_react(text, truncated=False):
     if not match or not match[1].strip() or not match[2].strip() or "<think>" in text or "```" in text:
         return ParsedAction(None, None, "Expected nonempty Reasoning followed by a single final Action line.")
     return ParsedAction(match[1].strip(), match[2].strip(), None)
+
+
+def parse_action_only(text, truncated=False):
+    if truncated:
+        return ParsedAction(None, None, "Generation reached max_new_tokens before EOS; output not executed.")
+    match = re.fullmatch(r"\s*Action:[ \t]*([^\r\n]+)\s*", text)
+    if not match or not match[1].strip() or "<think>" in text or "```" in text:
+        return ParsedAction(None, None, "Expected exactly one nonempty Action line and no other text.")
+    return ParsedAction(None, match[1].strip(), None)
 
 
 def observation_message(observation, commands, action_mode, score=0):

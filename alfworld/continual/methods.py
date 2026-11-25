@@ -30,7 +30,7 @@ class Method:
         return reset
 
     def build_context(self, episode):
-        messages = [system_message(self.config.action_mode)]
+        messages = [system_message(self.config.action_mode, self.config.output_format)]
         if self.config.method == "dc-cumulative":
             messages.append(reference_message(self.cheatsheet))
         for previous in self.history:
@@ -129,7 +129,7 @@ class Method:
                 return {"skipped": True, "skip_reason": "unsuccessful_episode",
                         "optimizer_steps": 0, "seconds": 0.0, "loss": None,
                         "version_before": self.version, "version_after": self.version}
-            messages = [system_message(self.config.action_mode), *episode.messages]
+            messages = [system_message(self.config.action_mode, self.config.output_format), *episode.messages]
             result = self.backend.train_episode(messages)
             result["version_before"] = self.version
             if not result.get("skipped", False):

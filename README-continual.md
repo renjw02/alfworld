@@ -735,3 +735,13 @@ Heat & place 200 配置复用固定的 `heat_place_200.seed42.json`，默认 lam
 .venv/bin/python -m alfworld.continual \
   --config configs/continual-heat-place-200-sft-negative-ul.yaml
 ```
+
+ICL 的 action-only 对照使用 `configs/continual-heat-place-200-icl-action-only.yaml`：
+`output_format: action_only`、`window_episodes: 4`（当前局＋最近三局），其余沿用
+200-task、seed=42 配置。模型仅输出 `Action: <command>` 一行；提示词、格式校验和
+格式错误反馈均与此一致。`react` 仍是默认格式。输出格式不同的实验不能互相 resume。
+
+```bash
+.venv/bin/python -m alfworld.continual \
+  --config configs/continual-heat-place-200-icl-action-only.yaml
+```
