@@ -79,6 +79,7 @@ def metadata(split="valid_seen"):
     return {"git_commit": commit, "git_dirty": dirty, "packages": packages,
             "python": sys.version, "protocol": f"{split}_streaming_adaptation",
             "ascent_icl_training_context": "current_episode_v1",
+            "success_only_sft_context": "full_episode_v2",
             "action_negative_feedback": "admissible_changed_observation_v2"}
 
 
@@ -219,6 +220,9 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             if saved_config != current_config:
                 raise ValueError("Resume configuration differs from the saved configuration")
             saved_metadata = json.loads((root / "metadata.json").read_text())
+            if (config.method == "success-only-sft"
+                    and saved_metadata.get("success_only_sft_context") != "full_episode_v2"):
+                raise ValueError("Success-only SFT context changed; start a new run")
             if (config.method in ("negative-ul", "projected-kl")
                     and saved_metadata.get("action_negative_feedback") != "admissible_changed_observation_v2"):
                 raise ValueError("Negative feedback definition changed; start a new run instead of resuming a legacy checkpoint")

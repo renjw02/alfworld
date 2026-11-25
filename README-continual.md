@@ -13,6 +13,10 @@ HF 后端在模型加载前固定 Python、NumPy、PyTorch 随机种子，并启
 GPU 分片方式或第三方自定义 kernel 的逐位复现。旧进程需要重新启动才会生效；
 比较重复实验应从同一初始模型开始，而不是从旧实验的中间 checkpoint 开始。
 
+所有方法推理时都先包含当前局全部历史。使用 `truncate_oldest` 时，超预算先删除历史局或
+辅助上下文；当前局仍超预算，再删除当前局最早的交互。截断数量记录在 `input_truncation` 中。
+显式设置 `context_overflow: error` 仍保持报错。success-only-sft 的旧窗口实验不能直接续跑。
+
 ## 安装和最小运行
 
 在仓库根目录，使用 Python 3.11+：
@@ -571,24 +575,27 @@ loss 对整条轨迹所有有效目标 token 等权平均，所以较长回复�
   --device cuda:0 --output-dir runs/heat-place-sft-seed42
 ```
 
-完整历史要求 `model.context_overflow: error`；默认输入预算 64512、生成预算 1024，
+推理默认 `model.context_overflow: truncate_oldest`；输入预算 64512、生成预算 1024，
 整条训练序列（包括模板和终局消息）上限 65536，且不超过模型上下文上限。
-超限明确报错，不切块、不静默截断、不删除历史。保留失败尝试日志，可在排查后重新运行。
+推理超预算时截断并记录。若 rollout 已截断，整轨迹 SFT 跳过该局更新并记录
+`rollout_context_truncated`；未截断的整条训练序列仍受训练长度上限约束，超限报错，不切块。
 使用相同配置加 `--resume` 从已提交的 episode 边界恢复；默认每 10 局和结束时保存参数状态。
-原 `success-only-sft` 的成功门控、五次交互历史、minibatch 语义保持不变。
+`success-only-sft` 保留成功门控和 minibatch 语义；推理与样本构造均使用当前局完整历史。
 
 ## Success-only SFT：按交互构造训练样本
 
 `success-only-sft` 仅在整局成功后更新，并逐步排除格式错误、截断、未执行或列表外动作、
 `Nothing happens.` 以及非终局的 observation 未变化步骤。ALFWorld 没有逐步进展奖励，
 这里的“成功交互”是可核查的有效交互筛选，不保证每步都是最短成功路径必需的动作。
-失败/无效步骤仍可出现在之前 5 次交互的历史上下文中，但不会成为监督目标。
+失败/无效步骤仍保留在当前局历史上下文中，但不会成为监督目标。
 
 每条训练样本单独包含 system prompt、从初始 observation 提取的 task description、
-之前最多 5 次交互的 observation / reasoning / action / feedback、当前 observation 和合法命令，
+当前局从初始任务开始的全部 observation / reasoning / action / feedback 和合法命令，
 再接本次完整的 reasoning/action 和 EOS。loss 仅覆盖本次回答和 EOS，历史回答与所有用户信息
 都 mask 为 `-100`。构造回答前缀直接使用与推理相同的 generation template；新方法推理时也
-使用同样的 5 次交互窗口，不向模型提供当前交互的未来反馈或整局成功结果。
+使用同样的当前局完整历史，不向模型提供当前交互的未来反馈或整局成功结果。
+`history_interactions` 仅为旧配置兼容字段，不再限制历史。样本仍受 `max_seq_tokens` 限制，
+超长训练样本整条跳过；扩大推理历史不会自动扩大训练显存预算。
 
 不再按 `training.chunk_tokens` 切块。使用 mini-batch 和梯度累积，沿用 `training` 中的 LoRA 和 AdamW 参数。
 默认 `sft.batch_size: 2`、`sft.gradient_accumulation_steps: 4`，有效 batch 为 8 条交互样本。
@@ -717,8 +724,8 @@ softmax；负 loss 为 `-log(1-q_bad)`。单候选或 token 无法对齐的样�
 去重后可训练的负动作样本平均。每次联合更新在同一参数下累积全部梯度，统一裁剪并
 执行一次 optimizer step；`sft.optimizer_steps` 控制每局重复次数，
 `training.negative_ul_steps` 不用于此方法。无正样本可仅做 UL，无负样本可仅做 SFT，
-均无有效目标则跳过；`lambda_neg: 0` 禁用负项。要求 dropout=0、单 GPU、完整上下文，
-超长时明确报错而不截断。
+均无有效目标则跳过；`lambda_neg: 0` 禁用负项。要求 dropout=0、单 GPU。
+推理可截断；截断的局跳过整轨迹联合更新，避免训练前缀与实际 rollout 不一致。
 
 Heat & place 200 配置复用固定的 `heat_place_200.seed42.json`，默认 lambda=1、每局
 2 次联合更新。`update.json` 保存正负 loss、负样本及跳过原因、原始/去重/可训练数量；

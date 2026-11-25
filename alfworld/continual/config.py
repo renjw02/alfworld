@@ -64,7 +64,7 @@ class AscentConfig:
 class SFTConfig:
     updates_per_batch: int = 1  # success-only-sft; whole-trajectory sft uses optimizer_steps
     max_seq_tokens: int = 2048
-    history_interactions: int = 5
+    history_interactions: int = 5  # legacy field; current-episode context is always complete
     batch_size: int = 2
     gradient_accumulation_steps: int = 4
     optimizer_steps: int = 2  # whole-trajectory sft only
@@ -149,8 +149,6 @@ class Config:
             raise ValueError("Unknown model backend")
         if self.model.context_overflow not in ("truncate_oldest", "error"):
             raise ValueError("Unknown model.context_overflow policy")
-        if self.method in ("sft", "sft-negative-ul") and self.model.context_overflow != "error":
-            raise ValueError("Whole-trajectory sft requires model.context_overflow=error")
         if self.method in ("negative-ul", "projected-kl", "sft-negative-ul"):
             import math
             if self.training.dropout != 0:

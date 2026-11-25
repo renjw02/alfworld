@@ -52,6 +52,32 @@ class SFTProtocolTests(unittest.TestCase):
         self.config.sft.max_seq_tokens = 8192
         self.renderer = renderer()
 
+    def test_all_methods_keep_complete_current_episode(self):
+        from alfworld.continual.config import METHODS
+        e = episode(12)
+        e.messages = rollout_context(self.config, e)[1:]
+        for name in METHODS:
+            cfg = Config(method=name)
+            cfg.sft.history_interactions = 0  # legacy field cannot limit inference
+            method = Method(cfg, MockBackend(cfg))
+            context = method.build_context(e)
+            self.assertEqual(context[-len(e.messages):], e.messages, name)
+            self.assertIn('inspect room 1', str(context), name)
+            self.assertIn('inspect room 12', str(context), name)
+
+    def test_truncated_rollouts_are_not_trained_with_untruncated_prefixes(self):
+        e = episode(2)
+        e.steps[1]['input_truncation'] = {'dropped_messages': 2}
+        samples, rejected = self.samples(e)
+        self.assertEqual([s['step'] for s in samples], [1])
+        self.assertEqual(rejected, [{'step': 2, 'reason': 'rollout_context_truncated'}])
+        for method in ('sft', 'sft-negative-ul'):
+            backend = HFBackend.__new__(HFBackend)
+            backend.config = Config(method=method)
+            result = backend.sft_episode(e)
+            self.assertTrue(result['skipped'])
+            self.assertEqual(result['optimizer_steps'], 0)
+
     def samples(self, e):
         return build_samples(self.config, e, self.renderer.serialize, self.renderer.tokenizer)
 
@@ -70,10 +96,10 @@ class SFTProtocolTests(unittest.TestCase):
             target = self.renderer.tokenizer.encode(e.steps[index]['raw_output']) + [2]
             self.assertEqual(sample['labels'][len(ids):], target)
             self.assertNotIn(e.steps[index]['next_observation'], sample['prompt'])
-            self.assertIn('Task: find a mug.', sample['prompt'])
+            self.assertIn('Your task is to: find a mug.', sample['prompt'])
             self.assertIn(e.steps[index]['observation'], sample['prompt'])
-            self.assertEqual(sample['history_steps'], list(range(max(1,index-4),index+1)))
-        self.assertNotIn('inspect room 1', samples[-1]['prompt'])
+            self.assertEqual(sample['history_steps'], list(range(1,index+1)))
+        self.assertIn('inspect room 1', samples[-1]['prompt'])
         self.assertIn('inspect room 3', samples[-1]['prompt'])
 
     def test_failed_episode_errors_noops_and_history_only(self):

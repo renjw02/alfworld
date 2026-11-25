@@ -6,6 +6,7 @@ no-op feedback, or unchanged observation. This is an auditable proxy, not proof
 that each action was necessary for solving the task.
 """
 import re
+import copy
 import time
 
 from .prompting import observation_message, parse_react, system_message
@@ -34,64 +35,43 @@ def interaction_error(step):
     return None
 
 
-def context_messages(config, task, history, current_message):
-    """Keep the last five chronological attempts, including feedback on errors.
-
-Earlier responses are context only. The final current observation/admissible list
-is authoritative. No future outcome or next observation of the target is exposed.
-"""
-    n = config.sft.history_interactions
-    recent = history[-n:] if n else []
-    messages = [system_message(config.action_mode), {"role": "user", "content": f"Task: {task}"}]
-    for step in recent:
-        messages.extend([
-            {"role": "user", "content": f"Observation:\n{step['observation']}"},
-            {"role": "assistant", "content": step["raw_output"]},
-            {"role": "user", "content": f"Feedback:\n{step['feedback']}"},
-        ])
-    messages.append(dict(current_message))
+def episode_context(config, episode, count):
+    """Reconstruct the exact current-episode rollout prefix without future turns."""
+    messages = [system_message(config.action_mode), copy.deepcopy(episode.messages[0])]
+    for step in episode.steps[:count]:
+        messages.append({"role": "assistant", "content": step["raw_output"]})
+        if step.get("format_error"):
+            messages.append({"role": "user", "content": step["feedback"]})
+        else:
+            messages.append(observation_message(step["next_observation"],
+                                                step["next_admissible_commands"],
+                                                config.action_mode, step.get("score", 0)))
     return messages
 
 
 def rollout_context(config, episode):
-    if episode.steps:
-        previous = episode.steps[-1]
-        current = current_observation(config, previous["next_observation"],
-                                      previous["next_admissible_commands"], previous)
-    else:
-        content = episode.messages[0]["content"]
-        if content.startswith("BEGIN EPISODE "):
-            content = content.split("\n", 1)[1]
-        current = {"role": "user", "content": content}
-    return context_messages(config, task_description(episode), episode.steps, current)
-
-
-def current_observation(config, observation, commands, previous=None):
-    current = observation_message(observation, commands, config.action_mode,
-                                  previous.get("score", 0) if previous else 0)
-    if previous and previous.get("format_error"):
-        current["content"] = previous["feedback"] + "\n" + current["content"]
-    return current
+    return episode_context(config, episode, len(episode.steps))
 
 
 def build_samples(config, episode, serialize, tokenizer):
-    """Preserve whole samples; never slice targets or drop any of the five turns.
+    """Preserve whole samples; never slice targets or drop current-episode history.
 
 Oversize samples are skipped with measured lengths. Raise the explicit limit
 after examining the pilot instead of silently training on incomplete context.
 """
     if not episode.outcome.get("success"):
         return [], [{"reason": "unsuccessful_episode"}]
-    task = task_description(episode)
     samples, rejected = [], []
     for index, step in enumerate(episode.steps):
+        truncation = step.get("input_truncation", {})
+        if truncation.get("dropped_messages", 0) or truncation.get("truncated_content_tokens", 0):
+            rejected.append({"step": step["step"], "reason": "rollout_context_truncated"})
+            continue
         error = interaction_error(step)
         if error:
             rejected.append({"step": step["step"], "reason": error})
             continue
-        current = current_observation(config, step["observation"], step["admissible_commands"],
-                                      episode.steps[index - 1] if index else None)
-        messages = context_messages(config, task, episode.steps[:index], current)
+        messages = episode_context(config, episode, index)
         prompt, prompt_ids = serialize(messages, True)
         response_ids = tokenizer.encode(step["raw_output"], add_special_tokens=False)
         eos = tokenizer.eos_token_id
@@ -110,7 +90,7 @@ after examining the pilot instead of silently training on incomplete context.
                         "response": step["raw_output"], "input_ids": ids,
                         "labels": [-100] * len(prompt_ids) + response_ids + [eos],
                         "prompt_tokens": len(prompt_ids), "target_tokens": len(response_ids) + 1,
-                        "history_steps": [s["step"] for s in episode.steps[max(0, index - config.sft.history_interactions):index]]})
+                        "history_steps": [s["step"] for s in episode.steps[:index]]})
     return samples, rejected
 
 

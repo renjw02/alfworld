@@ -19,6 +19,27 @@ def serialize(messages, generation):
 
 
 class ContextTests(unittest.TestCase):
+    def test_prior_episodes_drop_before_current_history(self):
+        system = {"role": "system", "content": "Rules"}
+        old = [{"role": "user", "content": "BEGIN EPISODE old\n" + "old " * 100},
+               {"role": "assistant", "content": "old action"}]
+        current = [{"role": "user", "content": "BEGIN EPISODE current\nInitial task"},
+                   {"role": "assistant", "content": "first action"},
+                   {"role": "user", "content": "first feedback"},
+                   {"role": "assistant", "content": "second action"},
+                   {"role": "user", "content": "latest observation"}]
+        budget = len(serialize([system] + current, True)[1])
+        for prefix in (old, [{"role": "user", "content": "cheatsheet " * 100}]):
+            messages = [system] + prefix + current
+            kept, _, _, report = fit_context(messages, budget, serialize, Tokenizer())
+            self.assertEqual(kept, [system] + current)
+            self.assertEqual(report['truncated_content_tokens'], 0)
+            kept, _, ids, report = fit_context(messages, budget - 1, serialize, Tokenizer())
+            self.assertLessEqual(len(ids), budget - 1)
+            self.assertEqual(kept[0], system)
+            self.assertEqual(kept[-1], current[-1])
+            self.assertGreater(report['dropped_messages'], len(prefix))
+
     def test_drop_oldest_turns_preserve_system_and_latest_commands(self):
         messages = [{"role": "system", "content": "Follow the rules."},
                     {"role": "user", "content": "old observation" * 50},

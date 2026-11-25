@@ -137,7 +137,7 @@ class TrajectoryTests(unittest.TestCase):
         self.assertTrue(m.observe_episode(e)['skipped'])
         self.assertEqual(m.version, 1)
         c.model.context_overflow = 'truncate_oldest'
-        with self.assertRaisesRegex(ValueError, 'context_overflow=error'): c.validate()
+        c.validate()
         for field in ('optimizer_steps', 'logits_chunk_tokens'):
             for value in (0, True, 1.5):
                 c = config(); setattr(c.sft, field, value)

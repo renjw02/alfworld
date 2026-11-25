@@ -30,9 +30,6 @@ class Method:
         return reset
 
     def build_context(self, episode):
-        if self.config.method == "success-only-sft":
-            from .sft import rollout_context
-            return rollout_context(self.config, episode)
         messages = [system_message(self.config.action_mode)]
         if self.config.method == "dc-cumulative":
             messages.append(reference_message(self.cheatsheet))

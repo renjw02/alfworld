@@ -241,6 +241,15 @@ class HFBackend:
         return result
 
     def sft_episode(self, episode):
+        if self.config.method in ("sft", "sft-negative-ul") and any(
+                s.get("input_truncation", {}).get("dropped_messages", 0)
+                or s.get("input_truncation", {}).get("truncated_content_tokens", 0)
+                for s in episode.steps):
+            # Whole-trajectory training cannot reproduce a truncated rollout
+            # prefix. Finish inference, but explicitly skip this episode's update.
+            return {"kind": self.config.method, "skipped": True,
+                    "skip_reason": "rollout_context_truncated", "optimizer_steps": 0,
+                    "loss": None, "seconds": 0.0}
         if self.config.method == "sft-negative-ul":
             architecture = getattr(self.model.config, "text_config", self.model.config)
             sample = build_joint_sample(self.config, episode, self._render, self.tokenizer,

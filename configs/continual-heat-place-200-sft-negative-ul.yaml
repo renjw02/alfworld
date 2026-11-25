@@ -17,7 +17,7 @@ model:
   backend: hf
   max_input_tokens: 64512
   max_new_tokens: 1024
-  context_overflow: error
+  context_overflow: truncate_oldest
 sft:
   max_seq_tokens: 65536
   optimizer_steps: 2

@@ -1,4 +1,4 @@
-"""Bound generation context without dropping the system prompt or newest observation."""
+"""Bound generation context preferring complete current-episode history within the token budget."""
 import copy
 
 
@@ -14,6 +14,19 @@ def fit_context(messages, maximum, serialize, tokenizer, policy="truncate_oldest
     prefix = 1 if messages and messages[0]["role"] == "system" else 0
     if len(messages) <= prefix:
         raise ValueError("System prompt alone exceeds the input budget")
+    # Prefer dropping whole prior episodes/auxiliary context before touching
+    # the current episode. If the current episode alone is too long, fall
+    # through to oldest-turn/content truncation below.
+    starts = [i for i, message in enumerate(messages)
+              if message["role"] == "user" and message["content"].startswith("BEGIN EPISODE ")]
+    if starts:
+        for start in starts:
+            kept = copy.deepcopy(messages[:prefix] + messages[start:])
+            text, ids = serialize(kept, True)
+            if len(ids) <= maximum:
+                report["dropped_messages"] = start - prefix
+                report["input_tokens"] = len(ids)
+                return kept, text, ids, report
     # Keep a valid conversation beginning at a user message; drop oldest turns first.
     candidates = [i for i in range(prefix, len(messages)) if messages[i]["role"] == "user"]
     if not candidates:
