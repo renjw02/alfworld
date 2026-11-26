@@ -39,5 +39,5 @@ sft:
   batch_size: 2
   gradient_accumulation_steps: 4
   history_interactions: 5
-  max_seq_tokens: 4096
+  max_seq_tokens: 32768
   updates_per_batch: 4
