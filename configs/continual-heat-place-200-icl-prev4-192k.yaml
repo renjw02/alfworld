@@ -1,0 +1,31 @@
+# ICL-4: four previous episodes plus the current episode.
+# 192K input + 1024 output tested on a single H100 80GB.
+method: icl
+action_mode: admissible
+window_episodes: 5
+max_steps: 50
+output_dir: runs/heat-place-200-icl-prev4-192k-seed42
+cheatsheet_max_new_tokens: 2048
+checkpoint_interval: 10
+memory_scope: stream
+stream:
+  order: shuffled
+  seed: 42
+  task_order:
+  - 1
+  - 2
+  - 3
+  - 4
+  - 5
+  - 6
+  data_dir: ~/.cache/alfworld
+  split: heat_place_200
+  manifest: configs/manifests/heat_place_200.seed42.json
+  limit: null
+model:
+  path: /data/jiawei/models/Qwen3.5-9B
+  device: cuda:0
+  backend: hf
+  max_input_tokens: 196608
+  context_overflow: truncate_oldest
+  max_new_tokens: 1024
