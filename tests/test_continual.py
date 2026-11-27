@@ -747,6 +747,65 @@ class ProtocolTests(unittest.TestCase):
         for path, contents in old_traces.items():
             self.assertEqual(path.read_bytes(), contents)
 
+    def test_retained_milestones_force_save_and_survive_cleanup_and_resume(self):
+        import pickle
+        self.config.method = "ascent"
+        self.config.stream.limit = 4
+        self.config.checkpoint_interval = 10
+        self.config.checkpoint_keep_positions = [2, 3, 4]
+        run(self.config, backend_factory=MockBackend, env_factory=FakeEnv)
+        root = Path(self.config.output_dir)
+        retained = {}
+        for position in (2, 3, 4):
+            pointer = json.loads((root / f"milestones/episode-{position:04d}.json").read_text())
+            checkpoint = root / pointer["checkpoint"]
+            retained[checkpoint] = checkpoint.read_bytes()
+            state = pickle.loads(retained[checkpoint])
+            self.assertEqual(state["next_position"], position)
+            self.assertEqual(state["method"]["version"], position)
+            self.assertEqual(state["backend"]["updates"], position)
+            self.assertEqual(len(pointer["completed"]), position)
+            self.assertIn("rng", state)
+        # Earlier rolling files were deleted, but retained snapshots still load.
+        self.assertEqual(len(list(root.glob("checkpoints/*.pkl"))), 1)
+        current = json.loads((root / "commit.json").read_text())
+        self.assertEqual((root / current["checkpoint"]).stat().st_ino,
+                         (root / "milestones/episode-0004.pkl").stat().st_ino)
+        run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
+        for checkpoint, contents in retained.items():
+            self.assertEqual(checkpoint.read_bytes(), contents)
+
+    def test_checkpoint_keep_positions_validation(self):
+        for positions in (None, [0], [-1], [True], [1.5], [2, 2], "50"):
+            with self.subTest(positions=positions):
+                config = Config(checkpoint_keep_positions=positions)
+                with self.assertRaisesRegex(ValueError, "checkpoint_keep_positions"):
+                    config.validate()
+        config = Config(checkpoint_keep_positions=[50, 100, 150])
+        config.stream.limit = 100
+        with self.assertRaisesRegex(ValueError, "exceed"):
+            config.validate()
+
+    def test_failed_milestone_write_does_not_advance_checkpoint(self):
+        from unittest.mock import patch
+        from alfworld.continual.logging import write_json
+        root = self.root / "retention-failure"
+        root.mkdir()
+        commit_checkpoint(root, {"next_position": 1}, [{"position": 0}])
+        previous = (root / "commit.json").read_bytes()
+
+        def fail_milestone(path, value):
+            if path.parent.name == "milestones":
+                raise OSError("milestone write failed")
+            write_json(path, value)
+
+        with patch("alfworld.continual.logging.write_json", side_effect=fail_milestone):
+            with self.assertRaisesRegex(OSError, "milestone write failed"):
+                commit_checkpoint(root, {"next_position": 2}, [{"position": 0}, {"position": 1}],
+                                  keep_positions=[2])
+        self.assertEqual((root / "commit.json").read_bytes(), previous)
+        self.assertEqual(load_checkpoint(root)[0]["next_position"], 1)
+
     def test_training_resume_before_first_checkpoint(self):
         self.config.method = "history-ntp"
         class FailingBackend(MockBackend):

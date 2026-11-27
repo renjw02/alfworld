@@ -44,7 +44,7 @@ class AttemptLog:
         self.stream.close()
 
 
-def commit_checkpoint(root, state, completed, model_checkpoint=True):
+def commit_checkpoint(root, state, completed, model_checkpoint=True, *, keep_positions=()):
     # Inference methods need only conversation/RNG progress, never model weights.
     checkpoint_dir = root / ("checkpoints" if model_checkpoint else "state")
     checkpoint_dir.mkdir(exist_ok=True)
@@ -54,10 +54,23 @@ def commit_checkpoint(root, state, completed, model_checkpoint=True):
         pickle.dump(state, stream, protocol=pickle.HIGHEST_PROTOCOL)
         stream.flush()
         os.fsync(stream.fileno())
-    # Only this atomic pointer makes the checkpoint and its episode results visible.
-    write_json(root / "commit.json", {"schema_version": 1, "next_position": state["next_position"],
-                                     "checkpoint": str(checkpoint.relative_to(root)),
-                                     "model_checkpoint": model_checkpoint, "completed": completed})
+    committed = {"schema_version": 1, "next_position": state["next_position"],
+                 "checkpoint": str(checkpoint.relative_to(root)),
+                 "model_checkpoint": model_checkpoint, "completed": completed}
+    if state["next_position"] in keep_positions:
+        milestones = root / "milestones"
+        milestones.mkdir(exist_ok=True)
+        name = f"episode-{state['next_position']:04d}"
+        retained = milestones / f"{name}.pkl"
+        temporary = milestones / f"{name}.{uuid.uuid4().hex}.tmp"
+        # Same filesystem: keep the immutable data without a second serialization
+        # or copy. Removing the rolling checkpoint cannot remove this hard link.
+        os.link(checkpoint, temporary)
+        os.replace(temporary, retained)
+        write_json(milestones / f"{name}.json",
+                   {**committed, "checkpoint": str(retained.relative_to(root))})
+    # Advance progress only after any requested milestone is safely retained.
+    write_json(root / "commit.json", committed)
     if previous:
         (root / previous["checkpoint"]).unlink(missing_ok=True)
 

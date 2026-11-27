@@ -193,6 +193,7 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             # Older runs predate this storage-only setting; their checkpoints remain readable.
             saved_config.setdefault("output_format", "react")
             saved_config.setdefault("checkpoint_interval", 10)
+            saved_config.setdefault("checkpoint_keep_positions", [])
             saved_config.setdefault("cheatsheet_max_new_tokens", 2048)
             saved_config.setdefault("memory_scope", "stream")
             saved_config.setdefault("icl_success_only", False)
@@ -343,6 +344,7 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
                 task_end = (index + 1 == len(entries)
                             or entries[index + 1]["task_type"] != entries[index]["task_type"])
                 save_model = training and ((index + 1) % config.checkpoint_interval == 0
+                                           or index + 1 in config.checkpoint_keep_positions
                                            or index + 1 == len(entries)
                                            or (config.memory_scope == "task_type" and task_end))
                 if not training or save_model:
@@ -351,7 +353,8 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
                     if save_model:
                         state["backend"] = backend.state_dict()
                     # Training results become committed only with their matching weights.
-                    commit_checkpoint(root, state, completed, model_checkpoint=save_model)
+                    commit_checkpoint(root, state, completed, model_checkpoint=save_model,
+                                      keep_positions=config.checkpoint_keep_positions)
                 print(f"[{index + 1}/{len(entries)}] {config.method}: {episode.outcome}", flush=True)
             except BaseException as exc:
                 write_json(log.path / "error.json", {"type": type(exc).__name__, "message": str(exc),

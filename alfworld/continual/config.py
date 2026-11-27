@@ -88,6 +88,7 @@ class Config:
     output_dir: str = "runs/experiment"
     cheatsheet_max_new_tokens: int = 2048
     checkpoint_interval: int = 10  # training episodes per model/optimizer checkpoint
+    checkpoint_keep_positions: list[int] = field(default_factory=list)
     memory_scope: str = "stream"  # stream | task_type (reset on task-block boundaries)
     stream: StreamConfig = field(default_factory=StreamConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
@@ -200,6 +201,13 @@ class Config:
                 raise ValueError(f"{name} must be a positive integer")
         if self.stream.limit is not None and self.stream.limit < 1:
             raise ValueError("stream.limit must be positive")
+        positions = self.checkpoint_keep_positions
+        if (not isinstance(positions, list)
+                or any(isinstance(p, bool) or not isinstance(p, int) or p < 1 for p in positions)
+                or len(set(positions)) != len(positions)):
+            raise ValueError("checkpoint_keep_positions must be distinct positive episode positions")
+        if self.stream.limit is not None and any(p > self.stream.limit for p in positions):
+            raise ValueError("checkpoint_keep_positions cannot exceed stream.limit")
         if self.training.chunk_tokens < 2:
             raise ValueError("chunk_tokens must be >= 2")
         if not 0 <= self.training.dropout < 1:

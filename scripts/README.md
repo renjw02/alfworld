@@ -1,3 +1,24 @@
+# Retain ASCENT checkpoints at 50/100/150
+
+```bash
+.venv/bin/python -m alfworld.continual \
+  --config configs/continual-heat-place-200-ascent-milestones.yaml \
+  --output-dir runs/heat-place-200-ascent-milestones-seed42
+```
+
+This starts one fresh ASCENT run on the first 150 episodes of the original
+heat200 seed42 manifest. Learning settings match the original heat200 ASCENT run.
+`checkpoint_keep_positions: [50, 100, 150]` saves each selected position after
+that episode's update, including adapter, optimizer, RNG, and method state.
+It forces a save even when the position falls between regular checkpoints.
+
+`milestones/episode-0050.json` (and `0100`, `0150`) records the position,
+completed episode records, and the retained `.pkl` path relative to the run root.
+The checkpoint is a hard link to immutable serialized state, so later cleanup of
+rolling checkpoints does not remove it. Ordinary runs retain their existing
+latest-checkpoint-only behavior. An interrupted run resumes with `--resume`.
+These are new-run checkpoints, not recovered weights from the original run.
+
 # Frozen heat200 transfer
 
 Evaluate the remaining four `valid_unseen` task types with the same ICL and
