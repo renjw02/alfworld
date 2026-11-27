@@ -1,3 +1,25 @@
+# Memoryless baselines on all six unseen types
+
+```bash
+.venv/bin/python -m alfworld.continual.memoryless_unseen \
+  --reference-eval runs/frozen-heat200-to-clean-unseen-repeat1-20261126T025854Z/ascent \
+  --output-dir runs/memoryless-all-unseen-seed42 \
+  --device cuda:0
+```
+
+Queues one evaluation per task type, including heat&place, on the chosen GPU.
+Model and inference parameters come from the reference transfer evaluation;
+the full unseen manifest is shuffled once using the reference seed, then filtered
+by task type. As in transfer evaluation, each task uses episode seed `42 + index`
+when the reference seed is 42. No source adapter or conversation is loaded, and
+no target history or parameter updates are retained. Room-exposure labels refer
+only to the comparison heat200 run, not to memoryless training.
+
+Use `--prepare-only` to inspect all six jobs without loading a model, or
+`--target-task heat_place` (or another task name) to run just one type.
+`launch.json` tracks the queue; each task directory contains the manifest,
+provenance, per-episode results and summary. Use a fresh output directory.
+
 # Retain ASCENT checkpoints at 50/100/150/200
 
 ```bash
