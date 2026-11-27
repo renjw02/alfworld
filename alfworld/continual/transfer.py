@@ -1,11 +1,12 @@
 """Frozen cross-task evaluation of a completed heat&place200 run.
 
 Usage: python -m alfworld.continual.transfer --source-run RUN --output-dir NEW_RUN
-Use --prepare-only to inspect the 31 clean&place unseen episodes without a GPU.
+Use --target-task to select an unseen task (default: clean_place), and
+--prepare-only to inspect the episodes without a GPU.
 ICL uses the source run's last three complete episodes (including failures).
 ASCENT uses final adapter weights without source conversation history.
 Neither method retains test episodes or updates parameters. Room-level scores
-separate FloorPlan10 (present in heat200) from FloorPlan424 (new to heat200).
+separate rooms present in heat200 from rooms new to heat200.
 Source checkpoints are trusted local pickle files. Use a fresh output directory;
 partial results are persisted per episode, but resuming is not supported.
 """
@@ -23,6 +24,15 @@ from .runner import run_episode, seed_all
 from .stream import build_manifest, data_root, digest, validate_manifest
 
 
+TARGET_TASKS = {
+    "clean_place": "pick_clean_then_place_in_recep",
+    "pick_place": "pick_and_place_simple",
+    "cool_place": "pick_cool_then_place_in_recep",
+    "look_at_light": "look_at_obj_in_light",
+    "pick_two_place": "pick_two_obj_and_place",
+}
+
+
 class FrozenMethod(Method):
     """Retain source demonstrations, but never learn from evaluation episodes."""
 
@@ -33,7 +43,9 @@ class FrozenMethod(Method):
         return None
 
 
-def prepare(source, output, *, device=None, data_dir=None):
+def prepare(source, output, *, device=None, data_dir=None, target_task="clean_place"):
+    if target_task not in TARGET_TASKS:
+        raise ValueError(f"Unknown target task: {target_task}")
     source, output = Path(source).resolve(), Path(output).resolve()
     if source == output or source in output.parents or output in source.parents:
         raise ValueError("Evaluation output must be separate from the source run")
@@ -88,14 +100,16 @@ def prepare(source, output, *, device=None, data_dir=None):
     config.validate()
     manifest = build_manifest(config.stream)
     manifest["episodes"] = [e for e in manifest["episodes"]
-                            if e["task_type"] == "pick_clean_then_place_in_recep"]
+                            if e["task_type"] == TARGET_TASKS[target_task]]
     validate_manifest(manifest, config.stream)
     for entry in manifest["episodes"]:
         trajectory = root / Path(entry["game"]).with_name("traj_data.json")
         room = json.loads(trajectory.read_text())["scene"]["floor_plan"]
         entry.update(floor_plan=room, room_seen_in_source=room in source_rooms)
     provenance = {
-        "protocol": "frozen_heat200_to_clean_unseen_v1", "source_run": str(source),
+        "protocol": ("frozen_heat200_to_clean_unseen_v1" if target_task == "clean_place"
+                     else "frozen_heat200_to_task_unseen_v1"), "source_run": str(source),
+        "target_task": target_task, "target_task_type": TARGET_TASKS[target_task],
         "source_method": config.method, "source_position": 200,
         "source_checkpoint": commit["checkpoint"],
         "source_checkpoint_sha256": digest(source / commit["checkpoint"]),
@@ -113,6 +127,7 @@ def summarize(rows, provenance):
                 "success_rate": wins / len(values) if values else None}
     return {**stats(rows), "protocol": provenance["protocol"],
             "source_method": provenance["source_method"],
+            "target_task": provenance.get("target_task", "clean_place"),
             "by_room": {room: stats([r for r in rows if r["floor_plan"] == room])
                         for room in sorted({r["floor_plan"] for r in rows})},
             "by_source_room_exposure": {
@@ -161,6 +176,7 @@ def evaluate(config, manifest, history, provenance, *, backend_factory=make_back
             try:
                 episode = run_episode(config, entry, index, method, log, env_factory)
                 row = {"episode_id": entry["episode_id"], "position": index,
+                       "task_type": entry["task_type"],
                        "floor_plan": entry["floor_plan"],
                        "room_seen_in_source": entry["room_seen_in_source"],
                        "attempt_dir": str(log.path.relative_to(root)), **episode.outcome}
@@ -179,9 +195,11 @@ def main():
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--device")
     parser.add_argument("--data-dir")
+    parser.add_argument("--target-task", choices=TARGET_TASKS, default="clean_place")
     parser.add_argument("--prepare-only", action="store_true", help="Inspect protocol and data without loading a model")
     args = parser.parse_args()
-    prepared = prepare(args.source_run, args.output_dir, device=args.device, data_dir=args.data_dir)
+    prepared = prepare(args.source_run, args.output_dir, device=args.device,
+                       data_dir=args.data_dir, target_task=args.target_task)
     if args.prepare_only:
         config, manifest, history, provenance = prepared
         print(json.dumps(provenance, indent=2))

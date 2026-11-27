@@ -1,3 +1,34 @@
+# Frozen heat200 transfer
+
+Evaluate the remaining four `valid_unseen` task types with the same ICL and
+ASCENT sources used by an existing clean&place evaluation:
+
+```bash
+.venv/bin/python scripts/run_frozen_transfer_suite.py \
+  --reference-eval runs/frozen-heat200-to-clean-unseen-repeat1-20261126T025854Z \
+  --output-dir runs/frozen-heat200-to-remaining-unseen-repeat1 \
+  --device cuda:5
+```
+
+Use `--prepare-only` to validate sources and inspect all eight jobs without loading
+a model or creating output. The suite checks checkpoint hashes, ICL history hashes,
+and matching target manifests before starting. It queues pick&place (24 episodes),
+cool&place (21), look-at-light (18), and pick-two&place (17), each with ICL and
+ASCENT. Counts refer to the local standard ALFWorld data after solvability filtering.
+ICL keeps the source's final three complete episodes; ASCENT loads the final
+adapter. Evaluation never updates weights or retains target episode history.
+
+Jobs run sequentially on the selected device. `launch.json` records queued/running/
+completed/failed status; each task/method directory contains its manifest,
+provenance, per-episode results, and summary with room-exposure breakdowns. Failed
+jobs do not prevent later jobs from running; the suite exits nonzero if any fail.
+Use a fresh output directory; partial evaluations cannot be resumed.
+
+For an individual evaluation, use `python -m alfworld.continual.transfer` with
+`--source-run`, `--output-dir`, `--device`, and `--target-task` (`clean_place`,
+`pick_place`, `cool_place`, `look_at_light`, or `pick_two_place`). Omitting the target
+preserves the original clean&place protocol.
+
 # Play
 
 
