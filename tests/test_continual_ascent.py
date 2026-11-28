@@ -25,19 +25,26 @@ class AscentProtocolTests(unittest.TestCase):
         from alfworld.continual.__main__ import main
         config = load_config("configs/continual-ascent-replay10.yaml").validate()
         self.assertEqual(config.ascent.replay_buffer_size, 10)
+        self.assertEqual(config.ascent.replay_batch_size, 4)
         for invalid in (0, -1, True, 1.5):
             config.ascent.replay_buffer_size = invalid
             with self.assertRaisesRegex(ValueError, "replay_buffer_size"):
                 config.validate()
         config.ascent.replay_buffer_size = 10
+        for invalid in (0, -1, True, 1.5):
+            config.ascent.replay_batch_size = invalid
+            with self.assertRaisesRegex(ValueError, "replay_batch_size"):
+                config.validate()
+        config.ascent.replay_batch_size = 4
         config.method = "tt-opsd"
         with self.assertRaisesRegex(ValueError, "requires ascent"):
             config.validate()
         with patch("sys.argv", ["continual", "--config", "configs/continual-ascent.yaml",
-                                "--replay-buffer-size", "10"]), \
+                                "--replay-buffer-size", "10", "--replay-batch-size", "3"]), \
                 patch("alfworld.continual.__main__.run", return_value={}) as run:
             main()
             self.assertEqual(run.call_args.args[0].ascent.replay_buffer_size, 10)
+            self.assertEqual(run.call_args.args[0].ascent.replay_batch_size, 3)
 
     def test_replay_fifo_success_gate_snapshot_and_task_reset(self):
         for method_name in ("ascent", "ascent-icl"):
@@ -51,6 +58,10 @@ class AscentProtocolTests(unittest.TestCase):
                 e.episode_id = str(i)
                 e.steps[0]["input_token_ids"] = [20, 21, 22]
                 result = method.observe_episode(e)
+                sampled = result["replay_sampled_episode_ids"]
+                self.assertEqual(len(sampled), min(i + 1, 4))
+                self.assertEqual(len(set(sampled)), len(sampled))
+                self.assertTrue(set(sampled) <= set(result["replay_episode_ids"]))
             self.assertEqual(result["replay_episode_ids"], list(map(str, range(1, 11))))
             self.assertEqual(result["replay_turn_counts"], [2] * 10)
             state = copy.deepcopy(backend.state_dict())
@@ -311,8 +322,7 @@ class AscentModelTests(unittest.TestCase):
         self.assertFalse(backend.model.training)
         self.assertTrue(backend.model.config.use_cache)
 
-        # Compare replay against an explicit combined-turn objective, with distinct
-        # teacher records and unequal trajectory lengths. No extra optimizer steps.
+        # Unequal trajectory lengths must still give each episode half the loss.
         backend.load_state_dict(initial)
         config.ascent.replay_buffer_size = trainer.replay.capacity = 10
         trainer.train(training_steps, z, 4096, episode_id="first")
@@ -321,6 +331,19 @@ class AscentModelTests(unittest.TestCase):
         other[0]["input_token_ids"] = [12, 13]
         other[0]["output_token_ids"] = [14, 2]
         second_z = [15, 16, 17]
+        with torch.no_grad():
+            episode_losses = []
+            for steps, prefix in ((training_steps, z), (other, second_z)):
+                turn_losses = []
+                for step in steps:
+                    length = len(step["output_token_ids"])
+                    ids = step["input_token_ids"] + step["output_token_ids"][:-1]
+                    with backend.model.disable_adapter():
+                        teacher = trainer._response_hidden(prefix + ids, length).clone()
+                    student = trainer._response_hidden(ids, length)
+                    turn_losses.append(trainer._block_loss(student, teacher).item() / length)
+                episode_losses.append(sum(turn_losses) / len(turn_losses))
+            expected_loss = sum(episode_losses) / len(episode_losses)
         replayed = trainer.train(other, second_z, 4096, episode_id="second")
         replay_state = copy.deepcopy(backend.state_dict())
         self.assertEqual(replayed["replay_episode_ids"], ["first", "second"])
@@ -328,8 +351,13 @@ class AscentModelTests(unittest.TestCase):
         self.assertEqual(replayed["target_tokens"], 7)
         self.assertEqual(replayed["optimizer_steps"], 2)
         self.assertEqual(replayed["total_optimizer_steps"], 4)
+        self.assertAlmostEqual(replayed["updates"][0]["loss"], expected_loss, places=6)
+        self.assertEqual(replayed["loss_reduction"], "mean_of_episode_turn_token_means")
+        for update in replayed["updates"]:
+            self.assertEqual([r["loss_weight"] for r in update["turns"]], [.25, .25, .5])
         backend.load_state_dict(first)
-        reference = trainer.train_turns(training_steps + other, [z, z, second_z], 4096)
+        reference = trainer.train_turns(training_steps + other, [z, z, second_z], 4096,
+                                        turn_weights=[.25, .25, .5])
         self.assertAlmostEqual(reference["loss"], replayed["loss"], places=6)
         for key, value in replay_state["adapter"].items():
             torch.testing.assert_close(value, backend.state_dict()["adapter"][key], rtol=0, atol=0)
@@ -353,6 +381,30 @@ class AscentModelTests(unittest.TestCase):
         backend.load_state_dict(legacy)
         self.assertEqual(trainer.replay.entries, [])
         self.assertEqual(trainer.steps, 0)
+
+        # A full buffer trains on only four sampled episodes, sampled once for
+        # both optimizer steps; loading runner RNG restores the same next batch.
+        import random
+        from unittest.mock import patch
+        for i in range(10):
+            trainer.replay.entries = trainer.replay.prepare(other, second_z, str(i))
+        before = copy.deepcopy(backend.state_dict())
+        rng = random.getstate()
+        with patch("alfworld.continual.ascent.random.sample", wraps=random.sample) as sample:
+            sampled = trainer.train(other, second_z, 4096, episode_id="new")
+            self.assertEqual(sample.call_count, 1)
+        sampled_state = copy.deepcopy(backend.state_dict())
+        self.assertEqual(sampled["training_turns"], 4)
+        self.assertEqual(sampled["target_tokens"], 8)
+        self.assertEqual(sampled["optimizer_steps"], 2)
+        self.assertEqual(sampled["replay_episodes"], 10)
+        self.assertEqual(len(set(sampled["replay_sampled_episode_ids"])), 4)
+        backend.load_state_dict(before)
+        random.setstate(rng)
+        replayed = trainer.train(other, second_z, 4096, episode_id="new")
+        self.assertEqual(replayed["replay_sampled_episode_ids"], sampled["replay_sampled_episode_ids"])
+        for key, value in sampled_state["adapter"].items():
+            torch.testing.assert_close(value, backend.state_dict()["adapter"][key], rtol=0, atol=0)
 
 
 if __name__ == "__main__":

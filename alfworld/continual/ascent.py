@@ -5,6 +5,8 @@ Generated response tokens are immutable. Only the teacher receives hindsight.
 This backend targets Qwen3_5ForCausalLM, as does the continual HF backend.
 """
 import copy
+import math
+import random
 import re
 import time
 from .training import NTPTrainer
@@ -80,12 +82,19 @@ class AscentReplayBuffer:
                            for s in steps]}
         return (self.entries + [entry])[-self.capacity:]
 
-    def summary(self):
+    def sample(self, entries, batch_size):
+        # The runner seeds and checkpoints Python's RNG, including on resume.
+        return random.sample(entries, batch_size) if len(entries) > batch_size else list(entries)
+
+    def summary(self, batch, batch_size):
         return {"replay_buffer_size": self.capacity,
                 "replay_episodes": len(self.entries),
                 "replay_episode_ids": [e["episode_id"] for e in self.entries],
                 "replay_turn_counts": [sum(bool(s["output_token_ids"]) for s in e["steps"])
-                                       for e in self.entries]}
+                                       for e in self.entries],
+                "replay_batch_size": batch_size,
+                "replay_batch_episodes": len(batch),
+                "replay_sampled_episode_ids": [e["episode_id"] for e in batch]}
 
 
 class AscentTrainer(NTPTrainer):
@@ -132,21 +141,27 @@ class AscentTrainer(NTPTrainer):
         return kl_sum(head(student_hidden), teacher_logits)
 
     def train(self, steps, privileged_ids, context_limit, *, episode_id=None):
-        """Accumulate all buffered turns before each optimizer step.
+        """Sample once per update call; give each sampled episode equal weight.
 
         Each old episode keeps its own immutable prefixes, responses and teacher
-        record. The loss remains a mean of turn token means across the buffer.
+        record. Both optimizer steps reuse this batch of successful episodes.
         """
         entries = self.replay.prepare(steps, privileged_ids, episode_id)
-        all_steps = [s for e in entries for s in e["steps"]]
-        all_records = [e["teacher_token_ids"] for e in entries for _ in e["steps"]]
-        result = self.train_turns(all_steps, all_records, context_limit)
+        batch = self.replay.sample(entries, self.config.replay_batch_size)
+        all_steps, all_records, weights = [], [], []
+        for entry in batch:
+            valid_steps = [s for s in entry["steps"] if s["output_token_ids"]]
+            all_steps.extend(valid_steps)
+            all_records.extend([entry["teacher_token_ids"]] * len(valid_steps))
+            weights.extend([1 / len(batch) / len(valid_steps)] * len(valid_steps))
+        result = self.train_turns(all_steps, all_records, context_limit, turn_weights=weights)
         if not result["skipped"]:
             self.replay.entries = entries
-        result.update(self.replay.summary())
+        result.update(self.replay.summary(batch, self.config.replay_batch_size),
+                      loss_reduction="mean_of_episode_turn_token_means")
         return result
 
-    def train_turns(self, steps, privileged_ids_by_turn, context_limit):
+    def train_turns(self, steps, privileged_ids_by_turn, context_limit, *, turn_weights=None):
         """Shared Eq. 8 optimizer with an explicit privileged prefix for each turn.
 
         TT-OPSD supplies different turn-local records. Keep episode-level gradient
@@ -158,6 +173,8 @@ class AscentTrainer(NTPTrainer):
         turns = []
         if len(steps) != len(privileged_ids_by_turn):
             raise ValueError("Privileged prefixes must align with every rollout turn")
+        if turn_weights is not None and len(turn_weights) != len(steps):
+            raise ValueError("Loss weights must align with every rollout turn")
         # Validate the entire episode before changing parameters or optimizer state.
         for step, privileged_ids in zip(steps, privileged_ids_by_turn):
             prompt, response = step["input_token_ids"], step["output_token_ids"]
@@ -176,6 +193,11 @@ class AscentTrainer(NTPTrainer):
                     "skip_reason": "no_response_tokens", "optimizer_steps": 0,
                     "total_optimizer_steps": self.steps, "target_tokens": 0, "loss": None,
                     "seconds": time.perf_counter() - start}
+        weights = ([w for s, w in zip(steps, turn_weights) if s["output_token_ids"]]
+                   if turn_weights is not None else [1 / len(turns)] * len(turns))
+        if (any(not math.isfinite(w) or w <= 0 for w in weights)
+                or not math.isclose(sum(weights), 1.0)):
+            raise ValueError("Loss weights must be positive, finite and sum to one")
         self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
         self.model.config.use_cache = False
         records = []
@@ -183,7 +205,7 @@ class AscentTrainer(NTPTrainer):
             for _ in range(self.config.optimizer_steps):
                 self.optimizer.zero_grad(set_to_none=True)
                 losses = []
-                for turn, ids, length, privileged_ids in turns:
+                for (turn, ids, length, privileged_ids), weight in zip(turns, weights):
                     self.model.eval()
                     # Exit this context before the student's forward AND backward:
                     # checkpoint recomputation must see the trainable adapter.
@@ -198,19 +220,19 @@ class AscentTrainer(NTPTrainer):
                             self._block_loss, student_hidden[:, offset:end], teacher_hidden[:, offset:end],
                             use_reentrant=False,
                         )
-                    loss = loss / length / len(turns)
+                    loss = loss / length * weight
                     if not torch.isfinite(loss):
                         raise RuntimeError("Non-finite distillation KL; episode update not committed")
                     loss.backward()
                     losses.append({"turn": turn, "target_tokens": length,
-                                   "kl": loss.item() * len(turns)})
+                                   "kl": loss.item() / weight, "loss_weight": weight})
                     del loss, student_hidden, teacher_hidden
                 norm = torch.nn.utils.clip_grad_norm_(self.parameters, self.config.max_grad_norm,
                                                       error_if_nonfinite=True)
                 self.optimizer.step()
                 self.steps += 1
                 records.append({"optimizer_step": self.steps, "gradient_norm": norm.item(),
-                                "loss": sum(r["kl"] for r in losses) / len(turns), "turns": losses})
+                                "loss": sum(r["kl"] * r["loss_weight"] for r in losses), "turns": losses})
         finally:
             self.optimizer.zero_grad(set_to_none=True)
             self.model.gradient_checkpointing_disable()

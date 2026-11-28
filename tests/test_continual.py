@@ -340,10 +340,22 @@ class ProtocolTests(unittest.TestCase):
         config_path = Path(self.config.output_dir) / "config.json"
         saved = json.loads(config_path.read_text())
         del saved["ascent"]["replay_buffer_size"]
+        del saved["ascent"]["replay_batch_size"]
         config_path.write_text(json.dumps(saved))
         run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
         self.config.ascent.replay_buffer_size = 10
         with self.assertRaisesRegex(ValueError, "Resume configuration differs"):
+            run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
+
+    def test_ascent_rejects_old_full_buffer_objective_on_resume(self):
+        self.config.method = "ascent"
+        self.config.ascent.replay_buffer_size = 10
+        run(self.config, backend_factory=MockBackend, env_factory=FakeEnv)
+        path = Path(self.config.output_dir) / "config.json"
+        saved = json.loads(path.read_text())
+        del saved["ascent"]["replay_batch_size"]
+        path.write_text(json.dumps(saved))
+        with self.assertRaisesRegex(ValueError, "replay objective changed"):
             run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
 
     def test_sft_runner_checkpoint_and_resume(self):
@@ -395,11 +407,13 @@ class ProtocolTests(unittest.TestCase):
         self.config.method = "ascent-icl"
         self.config.ascent.replay_buffer_size = replay_buffer_size
         self.config.stream.order = "task_blocked"
-        self.config.stream.limit = 4
+        limit = 4 if replay_buffer_size == 1 else 8
+        self.config.stream.limit = limit
         self.config.window_episodes = 3
         self.config.checkpoint_interval = 2
         seen = []
         distilled = []
+        batches = []
         class Backend(MockBackend):
             def generate(self, messages, **kwargs):
                 seen.append((self.updates, copy.deepcopy(messages)))
@@ -414,34 +428,42 @@ class ProtocolTests(unittest.TestCase):
                 if local != [system_message(self.config.action_mode), episode.messages[0]]:
                     raise AssertionError("Training prefix leaked ICL history or future feedback")
                 distilled.append(copy.deepcopy(prefix))
-                return super().distill_episode(episode)
+                result = super().distill_episode(episode)
+                batches.append(result["replay_sampled_episode_ids"])
+                return result
         class FailingBackend(Backend):
             def generate(self, messages, **kwargs):
-                if self.updates == 3:
+                if self.updates == limit - 1:
                     raise RuntimeError("interrupt after uncommitted update")
                 return super().generate(messages, **kwargs)
         with self.assertRaisesRegex(RuntimeError, "uncommitted update"):
             run(self.config, backend_factory=FailingBackend, env_factory=FakeEnv)
         root = Path(self.config.output_dir)
         state, rows = load_checkpoint(root)
-        self.assertEqual((state["next_position"], state["backend"]["updates"], len(rows)), (2, 2, 2))
+        self.assertEqual((state["next_position"], state["backend"]["updates"], len(rows)), (limit - 2,) * 3)
         self.assertEqual(len(state["method"]["history"]), 2)
         interrupted_prefix = distilled[-1]
+        original_batches = batches[:]
+        batches.clear()
         seen.clear()
         run(self.config, resume=True, backend_factory=Backend, env_factory=FakeEnv)
-        self.assertEqual(seen[0], (2, interrupted_prefix))
+        self.assertEqual(seen[0], (limit - 2, interrupted_prefix))
+        self.assertEqual(batches[0], original_batches[-1])
         self.assertEqual([sum(m["content"].startswith("BEGIN EPISODE") for m in messages)
                           for _, messages in seen], [3, 3])
         resumed, rows = load_checkpoint(root)
-        self.assertEqual(resumed["backend"]["updates"], 4)
-        self.assertEqual(len(resumed["backend"]["replay_buffer"]), min(4, replay_buffer_size))
-        self.assertEqual(resumed["method"]["version"], 4)
+        self.assertEqual(resumed["backend"]["updates"], limit)
+        self.assertEqual(len(resumed["backend"]["replay_buffer"]), min(limit, replay_buffer_size))
+        self.assertEqual(resumed["method"]["version"], limit)
         self.assertEqual(len(resumed["method"]["history"]), 2)
-        self.assertEqual([r["memory_reset_before"] for r in rows], [False] * 4)
+        self.assertEqual([r["memory_reset_before"] for r in rows], [False] * limit)
         self.assertEqual(len(list((root / "checkpoints").glob("*.pkl"))), 1)
         # A clean run must reach the same combined context/parameter checkpoint.
         self.config.output_dir = str(self.root / "baseline")
+        resumed_batches = original_batches[:-1] + batches
+        batches.clear()
         run(self.config, backend_factory=Backend, env_factory=FakeEnv)
+        self.assertEqual(batches, resumed_batches)
         baseline, _ = load_checkpoint(Path(self.config.output_dir))
         self.assertEqual(resumed["method"], baseline["method"])
         self.assertEqual(resumed["backend"], baseline["backend"])

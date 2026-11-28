@@ -319,18 +319,25 @@ uv run --locked --extra continual python -m alfworld.continual \
    成功且有响应 token 的 episode 回放，包含当前局；默认 `1` 保持单局训练。
 
 Replay 适用于 `ascent` 和 `ascent-icl`。每次成功局结束后，将当前训练数据加入 FIFO，
-淘汰最旧数据，再对整个 buffer 执行 `optimizer_steps` 次更新（默认仍是 2 次）。
-每个 optimizer step 遍历 buffer 全部轮次，先平均每轮响应 token，再平均全部轮次，
-因此较长 episode 的权重较大；不单独对各 episode 更新参数。失败局不入队、不触发回放，
+淘汰最旧数据，然后均匀、不放回地采样 `ascent.replay_batch_size` 个 episode（默认 4，
+CLI 为 `--replay-batch-size`）；不足 4 局时全部使用。当前局参与采样，但不保证被抽中。
+同一次训练的 `optimizer_steps` 次更新（默认 2 次）复用同一个 batch。
+每个 optimizer step 遍历 batch 全部轮次，先平均每轮响应 token，再平均每局轮次，
+最后对 batch 中各局的 loss 求平均，因此每个 episode 等权。逐轮累积梯度后统一更新参数。
+失败局不入队、不触发回放，
 也不挤占窗口。每局保留各自原始响应、训练前缀和成功记录，teacher 分布在训练时重新计算；
 ASCENT+ICL 仍只用对应 episode 自身的训练前缀。推理上下文窗口与训练 buffer 相互独立。
 
 Buffer 仅保存 CPU token 列表，随 adapter/optimizer checkpoint 保存和恢复；
 `memory_scope: task_type` 切换任务类型时一起清空，`stream` 则跨类型保留。
-旧运行的缺省容量视为 `1`；改变容量需要新 output directory。
-`update.json` 记录容量、实际 episode 数、来源 episode IDs 和各局训练轮数，
-`target_tokens`/`training_turns` 是本次整个 buffer 的量。按轮处理避免同时保留多局计算图，
-但满 buffer 时训练计算量可能接近单局版本的 10 倍，CPU 内存与 checkpoint 也会增长。
+采样使用 runner 已设种子并随 checkpoint 保存恢复的 Python RNG，断点续跑可复现采样。
+旧单局运行的缺省容量视为 `1`；旧版全 buffer 回放的 loss 权重不同，需新建运行。
+改变容量或 batch 大小也需要新 output directory。
+`update.json` 记录 buffer 容量、实际 episode 数、来源 IDs、各局训练轮数，
+以及 `replay_batch_size`、`replay_batch_episodes`、`replay_sampled_episode_ids`。
+`target_tokens`/`training_turns` 仅统计本次采样 batch；loss 标记为
+`mean_of_episode_turn_token_means`。按轮处理避免同时保留多局计算图，
+batch 满 4 局时训练计算量约为长度相近单局的 4 倍，CPU 内存与 checkpoint 按 buffer 容量增长。
 这是 replay 扩展，成功率收益需与单局基线实测比较。
 
 ```bash

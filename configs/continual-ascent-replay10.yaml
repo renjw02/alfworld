@@ -1,4 +1,4 @@
-# ASCENT replay extension: train on the latest 10 successful training episodes.
+# ASCENT replay: retain 10 successful episodes, sample 4 per training call.
 # Use this config rather than changing only --method on the NTP config.
 method: ascent
 action_mode: admissible
@@ -25,6 +25,7 @@ model:
   max_new_tokens: 1024
 ascent:
   replay_buffer_size: 10  # includes current episode; failures do not enter the buffer
+  replay_batch_size: 4  # without replacement; average loss equally over episodes
   kl_direction: forward  # reverse selects KL(student || teacher)
   # Paper Appendix B.3: down_proj only, rank 16, scale 32, two steps.
   rank: 16

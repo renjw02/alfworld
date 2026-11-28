@@ -301,8 +301,8 @@ class HFBackend:
             if self.config.method == "ascent-icl":
                 result.update(training_context_scope="current_episode",
                               training_input_tokens=[len(s["input_token_ids"]) for s in steps])
-        result.update(loss_scope="all_generated_response_tokens_including_eos",
-                      loss_reduction="mean_of_turn_token_means")
+        result.update(loss_scope="all_generated_response_tokens_including_eos")
+        result.setdefault("loss_reduction", "mean_of_turn_token_means")
         return result
 
     def state_dict(self):
@@ -437,12 +437,15 @@ class MockBackend:
         steps = (current_episode_training_steps(episode) if self.config.method == "ascent-icl"
                  else episode.steps)
         entries = self.replay.prepare(steps, list(text.encode()), episode.episode_id)
+        batch = self.replay.sample(entries, self.config.ascent.replay_batch_size)
         if entries:
             self.replay.entries = entries
             self.updates += 1
         return {"kind": "ascent", "mock": True, "optimizer_steps": 0, "loss": None,
                 "teacher_record": text, "retained_turns": kept, "filtered_turns": removed,
-                "seconds": 0.0, "skipped": not bool(entries), **self.replay.summary()}
+                "seconds": 0.0, "skipped": not bool(entries),
+                "loss_reduction": "mean_of_episode_turn_token_means",
+                **self.replay.summary(batch, self.config.ascent.replay_batch_size)}
 
     def state_dict(self):
         import copy

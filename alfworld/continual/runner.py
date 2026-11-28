@@ -207,6 +207,11 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             saved_config.setdefault("ascent", asdict(AscentConfig()))
             saved_config["ascent"].setdefault("kl_direction", "forward")
             saved_config["ascent"].setdefault("replay_buffer_size", 1)
+            if (saved_config.get("method") in ("ascent", "ascent-icl")
+                    and saved_config["ascent"]["replay_buffer_size"] > 1
+                    and "replay_batch_size" not in saved_config["ascent"]):
+                raise ValueError("ASCENT replay objective changed; start a new run")
+            saved_config["ascent"].setdefault("replay_batch_size", 4)
             saved_config.setdefault("sft", asdict(SFTConfig()))
             saved_config["sft"].setdefault("updates_per_batch", 1)
             saved_config["training"].setdefault("negative_ul_steps", 1)
