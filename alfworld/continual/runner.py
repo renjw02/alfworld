@@ -206,6 +206,7 @@ def run(config, resume=False, backend_factory=make_backend, env_factory=TextEnvi
             saved_config.setdefault("projected_kl", asdict(ProjectedKLConfig()))
             saved_config.setdefault("ascent", asdict(AscentConfig()))
             saved_config["ascent"].setdefault("kl_direction", "forward")
+            saved_config["ascent"].setdefault("replay_buffer_size", 1)
             saved_config.setdefault("sft", asdict(SFTConfig()))
             saved_config["sft"].setdefault("updates_per_batch", 1)
             saved_config["training"].setdefault("negative_ul_steps", 1)

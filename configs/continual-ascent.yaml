@@ -24,6 +24,7 @@ model:
   context_overflow: truncate_oldest
   max_new_tokens: 1024
 ascent:
+  replay_buffer_size: 1  # use 10 to replay the latest 10 successful training episodes
   kl_direction: forward  # reverse selects KL(student || teacher)
   # Paper Appendix B.3: down_proj only, rank 16, scale 32, two steps.
   rank: 16

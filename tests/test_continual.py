@@ -334,6 +334,18 @@ class ProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Resume configuration differs"):
             run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
 
+    def test_ascent_legacy_replay_config_defaults_to_single_episode(self):
+        self.config.method = "ascent"
+        run(self.config, backend_factory=MockBackend, env_factory=FakeEnv)
+        config_path = Path(self.config.output_dir) / "config.json"
+        saved = json.loads(config_path.read_text())
+        del saved["ascent"]["replay_buffer_size"]
+        config_path.write_text(json.dumps(saved))
+        run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
+        self.config.ascent.replay_buffer_size = 10
+        with self.assertRaisesRegex(ValueError, "Resume configuration differs"):
+            run(self.config, resume=True, backend_factory=MockBackend, env_factory=FakeEnv)
+
     def test_sft_runner_checkpoint_and_resume(self):
         self.config.method = "success-only-sft"
         self.config.checkpoint_interval = 1
@@ -374,7 +386,14 @@ class ProtocolTests(unittest.TestCase):
                 config.validate()
 
     def test_ascent_icl_checkpoint_replays_history_and_updates_together(self):
+        self.check_ascent_icl_checkpoint_replay(1)
+
+    def test_ascent_replay_buffer_checkpoint_resume_matches_clean_run(self):
+        self.check_ascent_icl_checkpoint_replay(10)
+
+    def check_ascent_icl_checkpoint_replay(self, replay_buffer_size):
         self.config.method = "ascent-icl"
+        self.config.ascent.replay_buffer_size = replay_buffer_size
         self.config.stream.order = "task_blocked"
         self.config.stream.limit = 4
         self.config.window_episodes = 3
@@ -415,6 +434,7 @@ class ProtocolTests(unittest.TestCase):
                           for _, messages in seen], [3, 3])
         resumed, rows = load_checkpoint(root)
         self.assertEqual(resumed["backend"]["updates"], 4)
+        self.assertEqual(len(resumed["backend"]["replay_buffer"]), min(4, replay_buffer_size))
         self.assertEqual(resumed["method"]["version"], 4)
         self.assertEqual(len(resumed["method"]["history"]), 2)
         self.assertEqual([r["memory_reset_before"] for r in rows], [False] * 4)

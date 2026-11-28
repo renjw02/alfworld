@@ -20,6 +20,59 @@ def episode():
 
 
 class AscentProtocolTests(unittest.TestCase):
+    def test_replay_config_and_cli(self):
+        from unittest.mock import patch
+        from alfworld.continual.__main__ import main
+        config = load_config("configs/continual-ascent-replay10.yaml").validate()
+        self.assertEqual(config.ascent.replay_buffer_size, 10)
+        for invalid in (0, -1, True, 1.5):
+            config.ascent.replay_buffer_size = invalid
+            with self.assertRaisesRegex(ValueError, "replay_buffer_size"):
+                config.validate()
+        config.ascent.replay_buffer_size = 10
+        config.method = "tt-opsd"
+        with self.assertRaisesRegex(ValueError, "requires ascent"):
+            config.validate()
+        with patch("sys.argv", ["continual", "--config", "configs/continual-ascent.yaml",
+                                "--replay-buffer-size", "10"]), \
+                patch("alfworld.continual.__main__.run", return_value={}) as run:
+            main()
+            self.assertEqual(run.call_args.args[0].ascent.replay_buffer_size, 10)
+
+    def test_replay_fifo_success_gate_snapshot_and_task_reset(self):
+        for method_name in ("ascent", "ascent-icl"):
+            config = Config(method=method_name, memory_scope="task_type")
+            config.ascent.replay_buffer_size = 10
+            backend = MockBackend(config)
+            method = Method(config, backend)
+            method.begin_task("pick")
+            for i in range(11):
+                e = episode()
+                e.episode_id = str(i)
+                e.steps[0]["input_token_ids"] = [20, 21, 22]
+                result = method.observe_episode(e)
+            self.assertEqual(result["replay_episode_ids"], list(map(str, range(1, 11))))
+            self.assertEqual(result["replay_turn_counts"], [2] * 10)
+            state = copy.deepcopy(backend.state_dict())
+            e.steps[0]["output_token_ids"][:] = [42]
+            self.assertEqual(backend.state_dict(), state)
+            e.outcome["success"] = False
+            self.assertTrue(method.observe_episode(e)["skipped"])
+            self.assertEqual(backend.state_dict(), state)
+            e.outcome["success"] = True
+            for step in e.steps:
+                step["output_token_ids"] = []
+            self.assertTrue(method.observe_episode(e)["skipped"])
+            self.assertEqual(backend.state_dict(), state)
+            for entry in state["replay_buffer"]:
+                expected = [3, 4, 5] if config.uses_icl else [20, 21, 22]
+                self.assertEqual(entry["steps"][0]["input_token_ids"], expected)
+            self.assertTrue(method.begin_task("clean"))
+            self.assertEqual(backend.state_dict()["replay_buffer"], [])
+            backend.load_state_dict(state)
+            state["replay_buffer"].clear()
+            self.assertEqual(len(backend.replay.entries), 10)
+
     def test_kl_direction_config_and_cli(self):
         from unittest.mock import patch
         from alfworld.continual.__main__ import main
@@ -153,6 +206,16 @@ class AscentProtocolTests(unittest.TestCase):
 
 
 class AscentModelTests(unittest.TestCase):
+    def setUp(self):
+        import inspect
+        from unittest.mock import patch
+        from transformers.models.qwen3_5 import modeling_qwen3_5 as modeling
+        # CPU numerical tests must use PyTorch fallbacks even when CUDA kernels
+        # are installed for the actual experiments on this machine.
+        for name in ("causal_conv1d_fn", "causal_conv1d_update",
+                     "torch_chunk_gated_delta_rule", "torch_recurrent_gated_delta_rule"):
+            self.enterContext(patch.object(modeling, name, inspect.unwrap(getattr(modeling, name))))
+
     def test_reverse_updates_teacher_freeze_chunking_and_resume(self):
         for method in ("ascent", "ascent-icl"):
             with self.subTest(method=method):
@@ -247,6 +310,49 @@ class AscentModelTests(unittest.TestCase):
         self.assertEqual(trainer.steps, steps_before)
         self.assertFalse(backend.model.training)
         self.assertTrue(backend.model.config.use_cache)
+
+        # Compare replay against an explicit combined-turn objective, with distinct
+        # teacher records and unequal trajectory lengths. No extra optimizer steps.
+        backend.load_state_dict(initial)
+        config.ascent.replay_buffer_size = trainer.replay.capacity = 10
+        trainer.train(training_steps, z, 4096, episode_id="first")
+        first = copy.deepcopy(backend.state_dict())
+        other = copy.deepcopy(training_steps[:1])
+        other[0]["input_token_ids"] = [12, 13]
+        other[0]["output_token_ids"] = [14, 2]
+        second_z = [15, 16, 17]
+        replayed = trainer.train(other, second_z, 4096, episode_id="second")
+        replay_state = copy.deepcopy(backend.state_dict())
+        self.assertEqual(replayed["replay_episode_ids"], ["first", "second"])
+        self.assertEqual(replayed["training_turns"], 3)
+        self.assertEqual(replayed["target_tokens"], 7)
+        self.assertEqual(replayed["optimizer_steps"], 2)
+        self.assertEqual(replayed["total_optimizer_steps"], 4)
+        backend.load_state_dict(first)
+        reference = trainer.train_turns(training_steps + other, [z, z, second_z], 4096)
+        self.assertAlmostEqual(reference["loss"], replayed["loss"], places=6)
+        for key, value in replay_state["adapter"].items():
+            torch.testing.assert_close(value, backend.state_dict()["adapter"][key], rtol=0, atol=0)
+        backend.load_state_dict(first)
+        trainer.train(other, second_z, 4096, episode_id="second")
+        for key, value in replay_state["adapter"].items():
+            torch.testing.assert_close(value, backend.state_dict()["adapter"][key], rtol=0, atol=0)
+        self.assertEqual(backend.state_dict()["trainer"]["replay_buffer"],
+                         replay_state["trainer"]["replay_buffer"])
+        before_buffer = copy.deepcopy(trainer.replay.entries)
+        with self.assertRaisesRegex(ValueError, "context overflow"):
+            trainer.train(other, second_z, 2, episode_id="overflow")
+        self.assertEqual(trainer.replay.entries, before_buffer)
+        self.assertEqual(trainer.steps, 4)
+        empty = [{**other[0], "output_token_ids": []}]
+        self.assertTrue(trainer.train(empty, second_z, 4096)["skipped"])
+        self.assertEqual(trainer.replay.entries, before_buffer)
+        self.assertEqual(trainer.steps, 4)
+        legacy = copy.deepcopy(initial)
+        legacy["trainer"].pop("replay_buffer", None)
+        backend.load_state_dict(legacy)
+        self.assertEqual(trainer.replay.entries, [])
+        self.assertEqual(trainer.steps, 0)
 
 
 if __name__ == "__main__":

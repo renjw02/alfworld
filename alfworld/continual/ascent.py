@@ -4,6 +4,7 @@ ASCENT keeps its rollout prefix; ASCENT+ICL supplies a current-episode-only pref
 Generated response tokens are immutable. Only the teacher receives hindsight.
 This backend targets Qwen3_5ForCausalLM, as does the continual HF backend.
 """
+import copy
 import re
 import time
 from .training import NTPTrainer
@@ -62,6 +63,31 @@ def reverse_kl_sum(student_logits, teacher_logits):
     return (log_p.exp() * (log_p - log_q)).sum()
 
 
+class AscentReplayBuffer:
+    """FIFO of successful training episodes; retain CPU token lists only."""
+
+    def __init__(self, capacity):
+        self.capacity = capacity
+        self.entries = []
+
+    def prepare(self, steps, privileged_ids, episode_id):
+        # An empty episode must neither evict data nor trigger historical updates.
+        if not any(s["output_token_ids"] for s in steps):
+            return []
+        entry = {"episode_id": episode_id, "teacher_token_ids": list(privileged_ids),
+                 "steps": [{key: copy.deepcopy(s[key])
+                            for key in ("step", "input_token_ids", "output_token_ids")}
+                           for s in steps]}
+        return (self.entries + [entry])[-self.capacity:]
+
+    def summary(self):
+        return {"replay_buffer_size": self.capacity,
+                "replay_episodes": len(self.entries),
+                "replay_episode_ids": [e["episode_id"] for e in self.entries],
+                "replay_turn_counts": [sum(bool(s["output_token_ids"]) for s in e["steps"])
+                                       for e in self.entries]}
+
+
 class AscentTrainer(NTPTrainer):
     """Share the frozen base; accumulate all turns before each optimizer step.
 
@@ -69,6 +95,19 @@ class AscentTrainer(NTPTrainer):
     checkpointed separately so full-vocabulary activations are recomputed during
     backward instead of retained for the entire response. No prefix is cut.
     """
+
+    def __init__(self, model, config):
+        super().__init__(model, config)
+        self.replay = AscentReplayBuffer(config.replay_buffer_size)
+
+    def state_dict(self):
+        state = super().state_dict()
+        state["replay_buffer"] = copy.deepcopy(self.replay.entries)
+        return state
+
+    def load_state_dict(self, state):
+        super().load_state_dict(state)
+        self.replay.entries = copy.deepcopy(state.get("replay_buffer", []))
 
     def _response_hidden(self, ids, response_length):
         import torch
@@ -92,9 +131,20 @@ class AscentTrainer(NTPTrainer):
         kl_sum = reverse_kl_sum if self.config.kl_direction == "reverse" else forward_kl_sum
         return kl_sum(head(student_hidden), teacher_logits)
 
-    def train(self, steps, privileged_ids, context_limit):
-        """ASCENT uses the same full-trajectory record at every turn."""
-        return self.train_turns(steps, [privileged_ids] * len(steps), context_limit)
+    def train(self, steps, privileged_ids, context_limit, *, episode_id=None):
+        """Accumulate all buffered turns before each optimizer step.
+
+        Each old episode keeps its own immutable prefixes, responses and teacher
+        record. The loss remains a mean of turn token means across the buffer.
+        """
+        entries = self.replay.prepare(steps, privileged_ids, episode_id)
+        all_steps = [s for e in entries for s in e["steps"]]
+        all_records = [e["teacher_token_ids"] for e in entries for _ in e["steps"]]
+        result = self.train_turns(all_steps, all_records, context_limit)
+        if not result["skipped"]:
+            self.replay.entries = entries
+        result.update(self.replay.summary())
+        return result
 
     def train_turns(self, steps, privileged_ids_by_turn, context_limit):
         """Shared Eq. 8 optimizer with an explicit privileged prefix for each turn.

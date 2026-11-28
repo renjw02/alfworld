@@ -7,7 +7,7 @@ from .types import Generation
 from .negative_ul import NegativeULTrainer, build_sample, candidates_for
 from .projected_kl import ProjectedKLTrainer
 from .training import NTPTrainer
-from .ascent import AscentTrainer, success_record, current_episode_training_steps
+from .ascent import AscentTrainer, AscentReplayBuffer, success_record, current_episode_training_steps
 from .tt_opsd import turn_records
 from .sft import SFTTrainer, build_samples
 from .sft_negative_ul import JointTrainer, build_joint_sample, positive_error, unique_negatives
@@ -294,7 +294,8 @@ class HFBackend:
             privileged_ids = self.tokenizer.encode(text, add_special_tokens=False)
             steps = (current_episode_training_steps(episode) if self.config.method == "ascent-icl"
                      else episode.steps)
-            result = self.trainer.train(steps, privileged_ids, architecture.max_position_embeddings)
+            result = self.trainer.train(steps, privileged_ids, architecture.max_position_embeddings,
+                                        episode_id=episode.episode_id)
             result.update(kind="ascent", teacher_record=text, teacher_token_ids=privileged_ids,
                           retained_turns=kept, filtered_turns=removed)
             if self.config.method == "ascent-icl":
@@ -347,6 +348,7 @@ class MockBackend:
     def __init__(self, config):
         self.config = config
         self.updates = 0
+        self.replay = AscentReplayBuffer(config.ascent.replay_buffer_size)
 
     def prepare_input(self, messages, *, max_new_tokens=None):
         text = json.dumps(messages, ensure_ascii=False)
@@ -432,18 +434,27 @@ class MockBackend:
                     "retained_turns": [s["step"] for s in episode.steps], "filtered_turns": [],
                     "seconds": 0.0, "skipped": skipped}
         text, kept, removed = success_record(episode)
-        if self.config.method == "ascent-icl":
-            current_episode_training_steps(episode)
-        self.updates += 1
+        steps = (current_episode_training_steps(episode) if self.config.method == "ascent-icl"
+                 else episode.steps)
+        entries = self.replay.prepare(steps, list(text.encode()), episode.episode_id)
+        if entries:
+            self.replay.entries = entries
+            self.updates += 1
         return {"kind": "ascent", "mock": True, "optimizer_steps": 0, "loss": None,
                 "teacher_record": text, "retained_turns": kept, "filtered_turns": removed,
-                "seconds": 0.0, "skipped": False}
+                "seconds": 0.0, "skipped": not bool(entries), **self.replay.summary()}
 
     def state_dict(self):
-        return {"updates": self.updates}
+        import copy
+        state = {"updates": self.updates}
+        if self.config.is_ascent:
+            state["replay_buffer"] = copy.deepcopy(self.replay.entries)
+        return state
 
     def load_state_dict(self, state):
+        import copy
         self.updates = state["updates"]
+        self.replay.entries = copy.deepcopy(state.get("replay_buffer", []))
 
     def metadata(self):
         return {"backend": "mock", "scientific_result": False, "token_encoding": "UTF-8 bytes, not model tokens"}

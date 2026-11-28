@@ -314,8 +314,31 @@ uv run --locked --extra continual python -m alfworld.continual \
 3. 在所有生成响应 token（含 EOS、格式错误及非法动作轮次）上计算全词表
    默认 forward KL `KL(teacher || student)`。先平均每轮 token，再平均轮次。system/user/模板和成功记录
    本身不作为目标；超长推理已经截断的前缀也按当时实际 token 原样复用。
-4. 每个成功局执行两次完整 episode 梯度累积与 AdamW 更新，LoRA 和优化器状态跨局延续，
-   不回放历史 episode。日志保留轨迹用于审计，不作为 replay buffer。
+4. 默认每个成功局执行两次完整 episode 梯度累积与 AdamW 更新，LoRA 和优化器状态跨局延续。
+   可用 `ascent.replay_buffer_size: 10`（或 `--replay-buffer-size 10`）启用最近 10 个
+   成功且有响应 token 的 episode 回放，包含当前局；默认 `1` 保持单局训练。
+
+Replay 适用于 `ascent` 和 `ascent-icl`。每次成功局结束后，将当前训练数据加入 FIFO，
+淘汰最旧数据，再对整个 buffer 执行 `optimizer_steps` 次更新（默认仍是 2 次）。
+每个 optimizer step 遍历 buffer 全部轮次，先平均每轮响应 token，再平均全部轮次，
+因此较长 episode 的权重较大；不单独对各 episode 更新参数。失败局不入队、不触发回放，
+也不挤占窗口。每局保留各自原始响应、训练前缀和成功记录，teacher 分布在训练时重新计算；
+ASCENT+ICL 仍只用对应 episode 自身的训练前缀。推理上下文窗口与训练 buffer 相互独立。
+
+Buffer 仅保存 CPU token 列表，随 adapter/optimizer checkpoint 保存和恢复；
+`memory_scope: task_type` 切换任务类型时一起清空，`stream` 则跨类型保留。
+旧运行的缺省容量视为 `1`；改变容量需要新 output directory。
+`update.json` 记录容量、实际 episode 数、来源 episode IDs 和各局训练轮数，
+`target_tokens`/`training_turns` 是本次整个 buffer 的量。按轮处理避免同时保留多局计算图，
+但满 buffer 时训练计算量可能接近单局版本的 10 倍，CPU 内存与 checkpoint 也会增长。
+这是 replay 扩展，成功率收益需与单局基线实测比较。
+
+```bash
+.venv/bin/python -m alfworld.continual \
+  --config configs/continual-ascent-replay10.yaml \
+  --manifest runs/memoryless-shuffled-admissible/manifest.json \
+  --output-dir runs/ascent-replay10-shuffled-admissible
+```
 
 论文给出的参数为 `down_proj`、rank=16、scale=32、lr=1.5e-4、每局两次更新。
 这里把 scale 实现为 PEFT `lora_alpha=32`，采用默认 alpha/r 缩放。

@@ -50,6 +50,7 @@ class TrainingConfig:
 @dataclass
 class AscentConfig:
     kl_direction: str = "forward"  # forward: KL(teacher || student); reverse: KL(student || teacher)
+    replay_buffer_size: int = 1  # successful training episodes including current; 1 = baseline
     rank: int = 16
     alpha: int = 32
     dropout: float = 0.0
@@ -226,10 +227,12 @@ class Config:
             a = self.ascent
             if a.kl_direction not in ("forward", "reverse"):
                 raise ValueError("ascent.kl_direction must be forward or reverse")
-            for name in ("rank", "alpha", "optimizer_steps", "logits_chunk_tokens"):
+            for name in ("rank", "alpha", "optimizer_steps", "logits_chunk_tokens", "replay_buffer_size"):
                 value = getattr(a, name)
                 if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                     raise ValueError(f"ascent.{name} must be a positive integer")
+            if self.is_tt_opsd and a.replay_buffer_size != 1:
+                raise ValueError("ascent.replay_buffer_size > 1 requires ascent or ascent-icl")
             import math
             for name in ("learning_rate", "max_grad_norm", "weight_decay", "dropout"):
                 if not math.isfinite(getattr(a, name)):

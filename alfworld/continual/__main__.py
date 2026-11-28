@@ -14,6 +14,8 @@ def main():
     parser.add_argument("--method", choices=METHODS)
     parser.add_argument("--kl-direction", choices=["forward", "reverse"],
                         help="ASCENT/ASCENT+ICL/TT-OPSD KL direction (default: forward)")
+    parser.add_argument("--replay-buffer-size", type=int,
+                        help="ASCENT successful training episodes to retain, including current (default: 1)")
     parser.add_argument("--stream-order", choices=["shuffled", "task_blocked"])
     parser.add_argument("--split", choices=STREAM_SPLITS)
     parser.add_argument("--action-mode", choices=["free", "admissible"])
@@ -41,6 +43,10 @@ def main():
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     config = load_config(args.config)
+    if args.replay_buffer_size is not None:
+        if (args.method or config.method) not in ("ascent", "ascent-icl"):
+            parser.error("--replay-buffer-size requires ascent or ascent-icl")
+        config.ascent.replay_buffer_size = args.replay_buffer_size
     if args.kl_direction is not None:
         if (args.method or config.method) not in ("ascent", "ascent-icl", "tt-opsd"):
             parser.error("--kl-direction requires ascent, ascent-icl, or tt-opsd")
