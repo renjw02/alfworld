@@ -19,11 +19,11 @@ def write_json(path, value):
 
 
 @contextmanager
-def run_lock(root):
+def run_lock(root, *, shared=False):
     root.mkdir(parents=True, exist_ok=True)
-    with (root / ".lock").open("w") as handle:
+    with (root / ".lock").open("a" if shared else "w") as handle:
         try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(handle, (fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             raise RuntimeError(f"Another process is using {root}") from exc
         yield

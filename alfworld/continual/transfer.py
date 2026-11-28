@@ -3,8 +3,9 @@
 Usage: python -m alfworld.continual.transfer --source-run RUN --output-dir NEW_RUN
 Use --target-task to select an unseen task (default: clean_place), and
 --prepare-only to inspect the episodes without a GPU.
-ICL uses the source run's last three complete episodes (including failures).
-ASCENT uses final adapter weights without source conversation history.
+--source-position selects a training boundary (default: 200). ICL reconstructs
+the last three complete episodes at that boundary (including failures).
+ASCENT loads the matching retained checkpoint without source history.
 Neither method retains test episodes or updates parameters. Room-level scores
 separate rooms present in heat200 from rooms new to heat200.
 Source checkpoints are trusted local pickle files. Use a fresh output directory;
@@ -13,11 +14,12 @@ partial results are persisted per episode, but resuming is not supported.
 import argparse
 import copy
 import json
+import pickle
 from pathlib import Path
 
 from .config import Config
 from .environment import TextEnvironment
-from .logging import AttemptLog, load_checkpoint, run_lock, write_json
+from .logging import AttemptLog, run_lock, write_json
 from .methods import Method
 from .model import make_backend
 from .runner import run_episode, seed_all
@@ -43,7 +45,11 @@ class FrozenMethod(Method):
         return None
 
 
-def prepare(source, output, *, device=None, data_dir=None, target_task="clean_place"):
+def prepare(source, output, *, device=None, data_dir=None, target_task="clean_place",
+            source_position=200):
+    if (isinstance(source_position, bool) or not isinstance(source_position, int)
+            or not 1 <= source_position <= 200):
+        raise ValueError("source_position must be an integer in 1..200")
     if target_task not in TARGET_TASKS:
         raise ValueError(f"Unknown target task: {target_task}")
     source, output = Path(source).resolve(), Path(output).resolve()
@@ -58,25 +64,37 @@ def prepare(source, output, *, device=None, data_dir=None, target_task="clean_pl
         raise ValueError("Source must be a standard ICL or ASCENT run")
     if config.stream.split != "heat_place_200":
         raise ValueError("Source must be a heat_place_200 run")
-    commit = json.loads((source / "commit.json").read_text())
+    source_commit = "commit.json"
+    commit = json.loads((source / source_commit).read_text())
+    if config.method == "ascent" and commit["next_position"] != source_position:
+        source_commit = f"milestones/episode-{source_position:04d}.json"
+        if not (source / source_commit).is_file():
+            raise ValueError(f"No retained ASCENT checkpoint at position {source_position}")
+        commit = json.loads((source / source_commit).read_text())
     completed = commit["completed"]
-    if commit["next_position"] != 200 or len(completed) != 200:
-        raise ValueError("Source must have all 200 episodes committed")
+    if (len(completed) != commit["next_position"] or len(completed) < source_position
+            or (config.method == "ascent" and commit["next_position"] != source_position)):
+        raise ValueError("Source does not contain the requested committed position")
+    completed = completed[:source_position]
     if any(e["task_type"] != "pick_heat_then_place_in_recep" for e in completed):
         raise ValueError("Source contains non-heat episodes")
     source_manifest = json.loads((source / "manifest.json").read_text())
+    if len(source_manifest["episodes"]) < source_position:
+        raise ValueError("Source manifest is shorter than the requested position")
     source_rooms = set()
     if data_dir:
         config.stream.data_dir = data_dir
     root = data_root(config.stream)
-    for entry in source_manifest["episodes"]:
+    for row, entry in zip(completed, source_manifest["episodes"][:source_position]):
+        if row["episode_id"] != entry["episode_id"]:
+            raise ValueError("Source committed episodes do not match manifest order")
         trajectory = root / Path(entry["game"]).with_name("traj_data.json")
         if digest(trajectory) != entry["trajectory_sha256"]:
             raise ValueError("Source trajectory has changed")
         source_rooms.add(json.loads(trajectory.read_text())["scene"]["floor_plan"])
     history, history_sources = [], []
     if config.method == "icl":
-        # Use actual final episodes, irrespective of the source retention policy.
+        # Never use an episode beyond the requested boundary.
         for row in completed[-3:]:
             path = source / row["attempt_dir"] / "episode.json"
             episode = json.loads(path.read_text())
@@ -85,6 +103,7 @@ def prepare(source, output, *, device=None, data_dir=None, target_task="clean_pl
             history.append(episode["messages"])
             history_sources.append({"episode_id": row["episode_id"], "sha256": digest(path)})
     config.output_dir = str(output)
+    config.checkpoint_keep_positions = []
     config.memory_scope = "stream"
     config.stream.split = "valid_unseen"
     config.stream.manifest = None
@@ -107,12 +126,18 @@ def prepare(source, output, *, device=None, data_dir=None, target_task="clean_pl
         room = json.loads(trajectory.read_text())["scene"]["floor_plan"]
         entry.update(floor_plan=room, room_seen_in_source=room in source_rooms)
     provenance = {
-        "protocol": ("frozen_heat200_to_clean_unseen_v1" if target_task == "clean_place"
+        "protocol": ("frozen_heat_prefix_to_task_unseen_v1" if source_position != 200
+                     else "frozen_heat200_to_clean_unseen_v1" if target_task == "clean_place"
                      else "frozen_heat200_to_task_unseen_v1"), "source_run": str(source),
         "target_task": target_task, "target_task_type": TARGET_TASKS[target_task],
-        "source_method": config.method, "source_position": 200,
-        "source_checkpoint": commit["checkpoint"],
-        "source_checkpoint_sha256": digest(source / commit["checkpoint"]),
+        "source_method": config.method, "source_position": source_position,
+        "source_commit": source_commit, "source_commit_sha256": digest(source / source_commit),
+        "source_checkpoint": (None if config.method == "icl" and source_position != commit["next_position"]
+                              else commit["checkpoint"]),
+        "source_checkpoint_sha256": (None if config.method == "icl" and source_position != commit["next_position"]
+                                     else digest(source / commit["checkpoint"])),
+        "history_reconstructed_from_traces": config.method == "icl",
+        "history_positions": list(range(max(1, source_position - 2), source_position + 1)) if history else [],
         "history_sources": history_sources, "history_episodes": len(history),
         "parameter_updates": False, "test_history_retention": False,
         "source_rooms": sorted(source_rooms), "test_episodes": len(manifest["episodes"]),
@@ -127,6 +152,7 @@ def summarize(rows, provenance):
                 "success_rate": wins / len(values) if values else None}
     return {**stats(rows), "protocol": provenance["protocol"],
             "source_method": provenance["source_method"],
+            "source_position": provenance.get("source_position"),
             "target_task": provenance.get("target_task", "clean_place"),
             "by_room": {room: stats([r for r in rows if r["floor_plan"] == room])
                         for room in sorted({r["floor_plan"] for r in rows})},
@@ -150,12 +176,19 @@ def evaluate(config, manifest, history, provenance, *, backend_factory=make_back
         if config.method == "ascent":
             source = Path(provenance["source_run"])
             # Completed runs are immutable inputs. Lock while checking/loading their pointer.
-            with run_lock(source):
-                commit = json.loads((source / "commit.json").read_text())
+            with run_lock(source, shared=True):
+                pointer = source / provenance.get("source_commit", "commit.json")
+                commit = json.loads(pointer.read_text())
                 if (commit["checkpoint"] != provenance["source_checkpoint"]
+                        or ("source_commit_sha256" in provenance
+                            and digest(pointer) != provenance["source_commit_sha256"])
                         or digest(source / commit["checkpoint"]) != provenance["source_checkpoint_sha256"]):
                     raise ValueError("Source checkpoint changed after preparation")
-                state, _ = load_checkpoint(source)
+                # Trusted local state: load the selected milestone, never the final pointer.
+                with (source / commit["checkpoint"]).open("rb") as stream:
+                    state = pickle.load(stream)
+                if state["next_position"] != provenance.get("source_position", commit["next_position"]):
+                    raise ValueError("Checkpoint state position does not match selection")
             if "backend" not in state:
                 raise ValueError("ASCENT source has no model checkpoint")
             backend.load_state_dict(state["backend"])
@@ -192,6 +225,7 @@ def evaluate(config, manifest, history, provenance, *, backend_factory=make_back
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-run", required=True)
+    parser.add_argument("--source-position", type=int, default=200)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--device")
     parser.add_argument("--data-dir")
@@ -199,7 +233,8 @@ def main():
     parser.add_argument("--prepare-only", action="store_true", help="Inspect protocol and data without loading a model")
     args = parser.parse_args()
     prepared = prepare(args.source_run, args.output_dir, device=args.device,
-                       data_dir=args.data_dir, target_task=args.target_task)
+                       data_dir=args.data_dir, target_task=args.target_task,
+                       source_position=args.source_position)
     if args.prepare_only:
         config, manifest, history, provenance = prepared
         print(json.dumps(provenance, indent=2))

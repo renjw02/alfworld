@@ -5,7 +5,7 @@ import tempfile
 import unittest
 
 from alfworld.continual.config import Config
-from alfworld.continual.logging import commit_checkpoint
+from alfworld.continual.logging import commit_checkpoint, run_lock
 from alfworld.continual.model import MockBackend
 from alfworld.continual.stream import digest
 from alfworld.continual.transfer import TARGET_TASKS, evaluate, prepare
@@ -63,16 +63,16 @@ class TransferTests(unittest.TestCase):
                                                   'scene': {'floor_plan': 'FloorPlan10'}}))
                 entries.append({'game': str(game.relative_to(root / 'data')),
                                 'trajectory_sha256': digest(trajectory)})
-            (source / 'manifest.json').write_text(json.dumps({'episodes': [entries[-1]]}))
+            source_entries = [{**entries[-1], 'episode_id': str(i)} for i in range(200)]
+            (source / 'manifest.json').write_text(json.dumps({'episodes': source_entries}))
             completed = []
             for i in range(200):
                 completed.append({'episode_id': str(i), 'attempt_dir': f'episodes/{i}',
                                   'task_type': heat})
-                if i >= 197:
-                    episode = source / f'episodes/{i}/episode.json'
-                    episode.parent.mkdir(parents=True)
-                    episode.write_text(json.dumps({'episode_id': str(i), 'messages': [
-                        {'role': 'user', 'content': f'heat demo {i}'}]}))
+                episode = source / f'episodes/{i}/episode.json'
+                episode.parent.mkdir(parents=True)
+                episode.write_text(json.dumps({'episode_id': str(i), 'messages': [
+                    {'role': 'user', 'content': f'heat demo {i}'}]}))
             commit_checkpoint(source, {'next_position': 200}, completed, model_checkpoint=False)
             targets = []
             for task, task_type in TARGET_TASKS.items():
@@ -92,6 +92,43 @@ class TransferTests(unittest.TestCase):
             self.assertEqual(default[3]['protocol'], 'frozen_heat200_to_clean_unseen_v1')
             with self.assertRaisesRegex(ValueError, 'Unknown target task'):
                 prepare(source, root / 'invalid', target_task='heat_place')
+
+            # The future source room and future demonstrations must not leak into prefix evaluation.
+            late = root / 'data/json_2.1.1/train/late/traj_data.json'
+            late.parent.mkdir(parents=True)
+            late.write_text(json.dumps({'task_type': heat, 'scene': {'floor_plan': 'FloorPlan99'}}))
+            for entry in source_entries[50:]:
+                entry.update(game=str(late.with_name('game.tw-pddl').relative_to(root / 'data')),
+                             trajectory_sha256=digest(late))
+            (source / 'manifest.json').write_text(json.dumps({'episodes': source_entries}))
+            for position in (50, 100, 150):
+                _, _, history, provenance = prepare(source, root / f'icl-{position}', source_position=position)
+                self.assertEqual([h[0]['content'] for h in history],
+                                 [f'heat demo {i}' for i in range(position - 3, position)])
+                self.assertIsNone(provenance['source_checkpoint'])
+                self.assertEqual(provenance['source_position'], position)
+                self.assertEqual('FloorPlan99' in provenance['source_rooms'], position > 50)
+
+            config.method = 'ascent'
+            (source / 'config.json').write_text(json.dumps(config.to_dict()))
+            for position in (50, 100, 150, 200):
+                commit_checkpoint(source, {'next_position': position, 'backend': {'adapter': position}},
+                                  completed[:position], keep_positions=[50, 100, 150, 200])
+            prepared = prepare(source, root / 'ascent-50', source_position=50)
+            self.assertEqual(prepared[3]['source_checkpoint'], 'milestones/episode-0050.pkl')
+            self.assertEqual(prepared[3]['source_rooms'], ['FloorPlan10'])
+            # A newer rolling pointer must not change which retained checkpoint is loaded.
+            commit_checkpoint(source, {'next_position': 200, 'backend': {'adapter': 'other'}}, completed)
+            backend = Backend(prepared[0])
+            with run_lock(source, shared=True):
+                result = evaluate(*prepared, backend_factory=lambda _: backend, env_factory=Env)
+            self.assertEqual(backend.loaded, {'adapter': 50})
+            self.assertEqual(result['source_position'], 50)
+            with self.assertRaisesRegex(ValueError, 'No retained ASCENT checkpoint'):
+                prepare(source, root / 'missing', source_position=75)
+            for position in (0, 201, True):
+                with self.assertRaisesRegex(ValueError, 'source_position'):
+                    prepare(source, root / 'invalid-position', source_position=position)
 
     def test_frozen_icl_and_ascent(self):
         for name in ('icl', 'ascent'):

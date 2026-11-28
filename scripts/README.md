@@ -1,3 +1,37 @@
+# Transfer from source positions 50/100/150
+
+```bash
+python scripts/run_checkpoint_transfer_suite.py \
+  --icl-source /path/to/heat200/icl-seed42-repeat1 \
+  --ascent-source /path/to/heat200/ascent-milestones-seed42 \
+  --output-dir /path/with/space/checkpoint-transfer \
+  --positions 50 100 150 \
+  --devices cuda:0 cuda:1 cuda:2 cuda:3 cuda:4 cuda:5
+```
+
+Queues 30 evaluations: three source positions × two methods × five unseen task
+types other than heat&place. Each GPU executes one job at a time. The suite checks
+matching target episode identities and order across all sources before launching.
+Use `--prepare-only` to validate and print the job plan without loading models.
+
+ICL uses the original base model and reconstructs the three complete source
+episodes ending at the selected position (48–50, 98–100, or 148–150), including
+failures. It does not load the final ICL state in place of an earlier state.
+ASCENT loads the selected `milestones/episode-NNNN.json` pointer and weights;
+positions count processed episodes, not optimizer steps. Room exposure uses only
+the source manifest prefix through the selected position. Parameter updates and
+target-history retention remain disabled, with the original seed42 shuffled
+unseen subsets, per-task episode seeds, and inference limits.
+
+Results live under `checkpoint-NNNN/METHOD/TASK/`, with checkpoint/trace hashes
+and source positions in `provenance.json`. `launch.json` records every job's GPU,
+PID, completion status, and summary. Failed jobs leave their logs and partial
+results while other jobs continue. Use a fresh output directory.
+
+An individual run uses `python -m alfworld.continual.transfer --source-position 50`
+alongside the existing `--source-run`, `--target-task`, `--output-dir`, and `--device`
+arguments. The default source position remains 200.
+
 # Memoryless baselines on all six unseen types
 
 ```bash
